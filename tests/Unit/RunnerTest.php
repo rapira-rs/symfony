@@ -101,8 +101,27 @@ final class RunnerTest
         \ob_end_clean();
 
         Assert::same($result, 0);
-        Assert::same($events->values, ['loop:before', 'handle', 'send', 'loop:after', 'terminate', 'drain']);
+        Assert::same($events->values, ['loop:before', 'handle', 'send:true', 'loop:after', 'terminate', 'drain']);
         Assert::same($kernel->terminateCalls, 1);
+    }
+
+    public function terminateExceptionsPropagateBeforeCollectionAndTheNextRequest(): void
+    {
+        $_SERVER = ['APP_ENV' => 'test'];
+        $events = new Events();
+        $kernel = new TerminateThrowingKernel($events);
+        $loop = new FakeRequestLoop([
+            $this->requestGlobals('/failure'),
+            $this->requestGlobals('/must-not-run'),
+        ], $events);
+
+        Expect::exception(\RuntimeException::class)->withMessage('terminate failed');
+        try {
+            (new Runner($kernel, $loop))->run();
+        } finally {
+            Assert::same($events->values, ['loop:before', 'handle', 'send:true', 'loop:after', 'terminate']);
+            Assert::same($loop->handlers, 1);
+        }
     }
 
     public function propagatesExceptionsWithoutTerminatingOrContinuing(): void
@@ -228,6 +247,25 @@ final class TerminableRecordingKernel implements HttpKernelInterface, Terminable
     }
 }
 
+final class TerminateThrowingKernel implements HttpKernelInterface, TerminableInterface
+{
+    public function __construct(private readonly Events $events) {}
+
+    public function handle(Request $request, int $type = self::MAIN_REQUEST, bool $catch = true): Response
+    {
+        $this->events->values[] = 'handle';
+
+        return new EventResponse($this->events);
+    }
+
+    public function terminate(Request $request, Response $response): void
+    {
+        $this->events->values[] = 'terminate';
+
+        throw new \RuntimeException('terminate failed');
+    }
+}
+
 final class ThrowingKernel implements HttpKernelInterface, TerminableInterface
 {
     public int $terminateCalls = 0;
@@ -256,7 +294,7 @@ final class EventResponse extends Response
 
     public function send(bool $flush = true): static
     {
-        $this->events->values[] = 'send';
+        $this->events->values[] = 'send:' . ($flush ? 'true' : 'false');
 
         return $this;
     }

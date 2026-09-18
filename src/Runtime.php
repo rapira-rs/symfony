@@ -12,6 +12,7 @@ use Symfony\Component\Runtime\SymfonyRuntime;
 
 /**
  * @api
+ * @psalm-consistent-constructor
  */
 class Runtime extends SymfonyRuntime
 {

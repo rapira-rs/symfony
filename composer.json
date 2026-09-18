@@ -43,9 +43,6 @@
     "extra": {
         "branch-alias": {
             "dev-main": "1.x-dev"
-        },
-        "runtime": {
-            "class": "Rapira\\Symfony\\Runtime"
         }
     },
     "config": {

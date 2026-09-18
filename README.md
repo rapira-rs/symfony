@@ -16,15 +16,27 @@ The package requires PHP 8.4 or newer and Symfony 7.4 or 8.0.
 
 ## Application setup
 
-Symfony's Runtime component reads `APP_RUNTIME` before it loads
-`vendor/autoload_runtime.php`. Define it in the process environment; setting it
-inside `public/index.php` after the runtime autoloader is required is too late.
+This package provides a Rapira-aware Symfony Runtime and runtime autoload
+template. Add the following project-level Symfony Runtime configuration to the
+application's `composer.json`:
 
-```dotenv
-APP_RUNTIME=Rapira\Symfony\Runtime
+```json
+{
+    "extra": {
+        "runtime": {
+            "autoload_template": "vendor/rapira/symfony/src/Internal/autoload_runtime.template",
+            "class": "Rapira\\Symfony\\Runtime"
+        }
+    }
+}
 ```
 
-Keep the normal Symfony front controller:
+Run `composer dump-autoload` after adding it. Composer then generates
+`vendor/autoload_runtime.php` with the Runtime class and conventional
+`public/index.php` entrypoint baked in. This is important because Rapira exposes
+`SCRIPT_FILENAME` only while handling a request, after the worker has already
+booted. No `APP_RUNTIME` environment variable or custom bootstrap script is
+required. Keep the normal Symfony front controller:
 
 ```php
 <?php
@@ -38,7 +50,22 @@ return static function (array $context): Kernel {
 };
 ```
 
-### Rapira 0.8.x
+### Released Rapira 0.8.x
+
+Rapira 0.8.0 and 0.8.1 use the top-level `[pool]` table:
+
+```toml
+[http]
+listen = "127.0.0.1:8000"
+
+[pool]
+entrypoint = "public/index.php"
+mode = "worker"
+```
+
+### Current unreleased Rapira `main`
+
+Current `main` uses a plugin-scoped pool:
 
 ```toml
 [http]
@@ -49,23 +76,10 @@ entrypoint = "public/index.php"
 mode = "worker"
 ```
 
-Released Rapira 0.8.x also accepts its original top-level pool form:
-
-```toml
-listen = "127.0.0.1:8000"
-
-[pool]
-entrypoint = "public/index.php"
-mode = "worker"
-```
-
-Current unreleased Rapira `main` uses the plugin-scoped `[http]` and
-`[http.pool]` form shown first.
-
 Start the server with:
 
 ```shell
-APP_RUNTIME='Rapira\Symfony\Runtime' rapira serve rapira.toml
+rapira serve rapira.toml
 ```
 
 ## Execution modes
@@ -86,6 +100,9 @@ between requests. Avoid storing request-specific state in static properties,
 singletons, or long-lived services. Symfony's kernel runs its normal next-handle
 service reset lifecycle, so services tagged for reset continue to work without
 special Rapira integration. Application state outside that lifecycle must be
-reset explicitly.
+reset explicitly. The runtime also collects cyclic garbage after each successful
+request lifecycle.
 
-Responses use Symfony HttpFoundation's normal `Response::send()` lifecycle.
+Responses use Symfony HttpFoundation's normal `Response::send()` lifecycle. The
+Rapira SAPI finalizes the response after the request callback returns; Symfony's
+`terminate()` hook then runs before the next request is accepted.
