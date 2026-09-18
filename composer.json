@@ -1,0 +1,64 @@
+{
+    "name": "rapira/symfony",
+    "description": "Symfony Runtime for Rapira Worker mode",
+    "license": "BSD-3-Clause",
+    "type": "library",
+    "keywords": [
+        "rapira",
+        "runtime",
+        "symfony",
+        "worker"
+    ],
+    "homepage": "https://github.com/rapira-rs/symfony",
+    "authors": [
+        {
+            "name": "Aleksei Gagarin",
+            "homepage": "https://github.com/roxblnfk"
+        }
+    ],
+    "require": {
+        "php": ">=8.4",
+        "rapira/contract": "dev-master",
+        "symfony/http-foundation": "^7.4 || ^8.0",
+        "symfony/http-kernel": "^7.4 || ^8.0",
+        "symfony/runtime": "^7.4 || ^8.0"
+    },
+    "require-dev": {
+        "spiral/code-style": "^2.3.1",
+        "testo/testo": "^0.10.42",
+        "vimeo/psalm": "^7"
+    },
+    "autoload": {
+        "psr-4": {
+            "Rapira\\Symfony\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Rapira\\Symfony\\Tests\\": "tests/"
+        }
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true,
+    "extra": {
+        "branch-alias": {
+            "dev-main": "1.x-dev"
+        },
+        "runtime": {
+            "class": "Rapira\\Symfony\\Runtime"
+        }
+    },
+    "config": {
+        "allow-plugins": {
+            "symfony/runtime": true
+        },
+        "sort-packages": true
+    },
+    "scripts": {
+        "cs:diff": "php-cs-fixer fix --dry-run -v --diff",
+        "cs:fix": "php-cs-fixer fix -v",
+        "psalm": "psalm",
+        "psalm:ci": "psalm --output-format=github --show-info=false --stats --threads=4",
+        "test": "testo"
+    }
+}

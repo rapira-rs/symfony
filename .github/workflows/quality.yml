@@ -1,0 +1,41 @@
+---
+
+name: Quality and security
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  quality:
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    env:
+      COMPOSER_ROOT_VERSION: 1.x-dev
+    steps:
+      - name: Check out the codebase
+        uses: actions/checkout@v6
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          ini-values: error_reporting=E_ALL
+          coverage: none
+
+      - name: Validate composer metadata
+        run: composer validate --ansi --strict
+
+      - name: Install dependencies
+        uses: ramsey/composer-install@v3
+
+      - name: Check code style
+        run: composer cs:diff
+
+      - name: Run static analysis
+        run: composer psalm:ci
+
+      - name: Audit dependencies
+        run: composer audit --ansi

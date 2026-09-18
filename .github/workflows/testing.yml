@@ -1,0 +1,41 @@
+---
+
+name: Unit testing
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  testing:
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    env:
+      COMPOSER_ROOT_VERSION: 1.x-dev
+    strategy:
+      fail-fast: false
+      matrix:
+        php-version:
+          - '8.4'
+          - '8.5'
+    steps:
+      - name: Check out the codebase
+        uses: actions/checkout@v6
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php-version }}
+          ini-values: error_reporting=E_ALL
+          coverage: none
+
+      - name: Validate composer metadata
+        run: composer validate --ansi --strict
+
+      - name: Install dependencies
+        uses: ramsey/composer-install@v3
+
+      - name: Run unit tests
+        run: composer test

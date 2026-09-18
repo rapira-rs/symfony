@@ -1,0 +1,6 @@
+/.*/
+!/.github/
+/runtime/
+/vendor/
+/composer.lock
+*.log
