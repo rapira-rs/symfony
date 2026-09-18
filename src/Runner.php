@@ -53,6 +53,8 @@ final readonly class Runner implements RunnerInterface
             if ($this->kernel instanceof TerminableInterface && $request !== null && $response !== null) {
                 $this->kernel->terminate($request, $response);
             }
+
+            \gc_collect_cycles();
         }
 
         return 0;
