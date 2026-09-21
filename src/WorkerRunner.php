@@ -10,6 +10,9 @@ use Symfony\Component\HttpKernel\HttpKernelInterface;
 use Symfony\Component\HttpKernel\TerminableInterface;
 use Symfony\Component\Runtime\RunnerInterface;
 
+/**
+ * @internal
+ */
 final readonly class WorkerRunner implements RunnerInterface
 {
     /**

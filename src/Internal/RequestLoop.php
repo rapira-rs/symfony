@@ -6,13 +6,14 @@ namespace Rapira\Symfony\Internal;
 
 /**
  * @internal
- * @psalm-mutable
+ * @psalm-suppress MissingInterfaceImmutableAnnotation
  */
 interface RequestLoop
 {
     /**
+     * @psalm-suppress MissingAbstractPureAnnotation
+     *
      * @param callable(): bool $handler
-     * @psalm-impure
      */
     public function handle(callable $handler): bool;
 }

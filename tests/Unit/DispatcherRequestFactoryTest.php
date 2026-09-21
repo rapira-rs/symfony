@@ -20,7 +20,22 @@ final class DispatcherRequestFactoryTest
 {
     public function convertsRequestWithoutMutatingGlobals(): void
     {
-        $_SERVER = ['APP_ENV' => 'test', 'HTTP_BOOT_ONLY' => 'no'];
+        $_SERVER = [
+            'APP_ENV' => 'test',
+            'HTTP_BOOT_ONLY' => 'no',
+            'REQUEST_METHOD' => 'BOOT',
+            'REQUEST_URI' => '/boot',
+            'SERVER_PROTOCOL' => 'HTTP/0.9',
+            'REQUEST_TIME' => 1,
+            'REQUEST_TIME_FLOAT' => 1.5,
+            'HTTPS' => 'off',
+            'REMOTE_ADDR' => '192.0.2.1',
+            'REMOTE_PORT' => 1,
+            'SERVER_ADDR' => '192.0.2.2',
+            'SERVER_PORT' => 2,
+            'CONTENT_TYPE' => 'text/boot',
+            'CONTENT_LENGTH' => '999',
+        ];
         $_GET = ['global' => 'unchanged'];
         $_POST = ['global' => 'unchanged'];
         $_COOKIE = ['global' => 'unchanged'];
@@ -40,14 +55,26 @@ final class DispatcherRequestFactoryTest
                 'Cookie' => ['a=1'],
                 'cookie' => ['b=2'],
                 'Content-Type' => ['application/json'],
+                'Content-Length' => ['20'],
             ],
             body: "{\"binary\":\"\\u0000\"}",
         )));
         $request = $converted->request;
 
         Assert::same($request->getMethod(), 'POST');
+        Assert::same($request->server->get('RAPIRA_REQUEST_METHOD'), 'POST');
+        Assert::same($request->attributes->get('rapira.request_method'), 'POST');
         Assert::same($request->server->get('REQUEST_URI'), '/path?q=one&q=two&raw=%2F');
         Assert::same($request->server->get('SERVER_PROTOCOL'), 'HTTP/2');
+        Assert::same($request->server->get('REQUEST_TIME'), 1_700_000_000);
+        Assert::same($request->server->get('REQUEST_TIME_FLOAT'), 1_700_000_000.5);
+        Assert::same($request->server->get('HTTPS'), 'on');
+        Assert::same($request->server->get('REMOTE_ADDR'), '127.0.0.1');
+        Assert::same($request->server->get('REMOTE_PORT'), 40000);
+        Assert::same($request->server->get('SERVER_ADDR'), '127.0.0.1');
+        Assert::same($request->server->get('SERVER_PORT'), 443);
+        Assert::same($request->server->get('CONTENT_TYPE'), 'application/json');
+        Assert::same($request->server->get('CONTENT_LENGTH'), '20');
         Assert::same($request->headers->all('x-repeat'), ['one', 'two']);
         Assert::same($request->cookies->all(), ['a' => '1', 'b' => '2']);
         Assert::same($request->getContent(), "{\"binary\":\"\\u0000\"}");
