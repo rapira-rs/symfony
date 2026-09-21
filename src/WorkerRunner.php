@@ -10,7 +10,7 @@ use Symfony\Component\HttpKernel\HttpKernelInterface;
 use Symfony\Component\HttpKernel\TerminableInterface;
 use Symfony\Component\Runtime\RunnerInterface;
 
-final readonly class Runner implements RunnerInterface
+final readonly class WorkerRunner implements RunnerInterface
 {
     /**
      * @psalm-mutation-free

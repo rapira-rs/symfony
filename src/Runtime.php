@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace Rapira\Symfony;
 
+use Rapira\Http\HttpDispatcher;
 use Rapira\Mode;
+use Rapira\Symfony\Internal\DispatcherRequestFactory;
+use Rapira\Symfony\Internal\ExchangeResponseEmitter;
 use Rapira\Symfony\Internal\NativeRequestLoop;
 use Symfony\Component\HttpKernel\HttpKernelInterface;
 use Symfony\Component\Runtime\RunnerInterface;
@@ -42,7 +45,7 @@ class Runtime extends SymfonyRuntime
     {
         $this->mode = $this->getMode();
 
-        if ($this->mode === Mode::Worker) {
+        if ($this->mode === Mode::Worker || $this->mode === Mode::Dispatcher) {
             $_SERVER['APP_RUNTIME_MODE'] = 'web=1&worker=1';
         }
 
@@ -58,9 +61,12 @@ class Runtime extends SymfonyRuntime
 
         return match ($this->mode) {
             Mode::Classic => parent::getRunner($application),
-            Mode::Worker => new Runner($application, new NativeRequestLoop()),
-            Mode::Dispatcher => throw new \LogicException(
-                'Rapira Dispatcher mode is not supported for Symfony HttpKernel applications.',
+            Mode::Worker => new WorkerRunner($application, new NativeRequestLoop()),
+            Mode::Dispatcher => new DispatcherRunner(
+                $application,
+                $this->getHttpDispatcher(),
+                new DispatcherRequestFactory(),
+                new ExchangeResponseEmitter(),
             ),
         };
     }
@@ -73,5 +79,22 @@ class Runtime extends SymfonyRuntime
     protected function getMode(): Mode
     {
         return \Rapira\get_mode();
+    }
+
+    /**
+     * @psalm-suppress MissingPureAnnotation
+     * @psalm-suppress UndefinedFunction The function is provided by the Rapira extension and its contract.
+     */
+    protected function getHttpDispatcher(): HttpDispatcher
+    {
+        $dispatcher = \Rapira\get_dispatcher();
+        if (!$dispatcher instanceof HttpDispatcher) {
+            throw new \LogicException(\sprintf(
+                'Rapira Dispatcher mode requires an HTTP dispatcher; got %s.',
+                $dispatcher::class,
+            ));
+        }
+
+        return $dispatcher;
     }
 }
