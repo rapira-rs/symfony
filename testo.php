@@ -11,10 +11,7 @@ return new ApplicationConfig(
     suites: [
         new SuiteConfig(
             name: 'Unit',
-            location: new FinderConfig(include: [
-                __DIR__ . '/tests/Unit/ARuntimeTest.php',
-                __DIR__ . '/tests/Unit/RunnerTest.php',
-            ]),
+            location: new FinderConfig([__DIR__ . '/tests/Unit']),
         ),
     ],
 );

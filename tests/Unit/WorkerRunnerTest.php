@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Rapira\Symfony\Tests\Unit;
 
 use Rapira\Symfony\Internal\RequestLoop;
-use Rapira\Symfony\Runner;
+use Rapira\Symfony\WorkerRunner;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\HttpKernelInterface;
@@ -15,7 +15,7 @@ use Testo\Expect;
 use Testo\Test;
 
 #[Test]
-final class RunnerTest
+final class WorkerRunnerTest
 {
     public function servesSequentialRequestsWithFreshGlobalsAndOneResidentKernel(): void
     {
@@ -54,7 +54,7 @@ final class RunnerTest
         ]);
 
         \ob_start();
-        $result = (new Runner($kernel, $loop))->run();
+        $result = (new WorkerRunner($kernel, $loop))->run();
         $output = (string) \ob_get_clean();
 
         Assert::same($result, 0);
@@ -97,7 +97,7 @@ final class RunnerTest
         $loop = new FakeRequestLoop([$this->requestGlobals('/lifecycle')], $events);
 
         \ob_start();
-        $result = (new Runner($kernel, $loop))->run();
+        $result = (new WorkerRunner($kernel, $loop))->run();
         \ob_end_clean();
 
         Assert::same($result, 0);
@@ -117,7 +117,7 @@ final class RunnerTest
 
         Expect::exception(\RuntimeException::class)->withMessage('terminate failed');
         try {
-            (new Runner($kernel, $loop))->run();
+            (new WorkerRunner($kernel, $loop))->run();
         } finally {
             Assert::same($events->values, ['loop:before', 'handle', 'send:true', 'loop:after', 'terminate']);
             Assert::same($loop->handlers, 1);
@@ -136,7 +136,7 @@ final class RunnerTest
 
         Expect::exception(\RuntimeException::class)->withMessage('kernel failed');
         try {
-            (new Runner($kernel, $loop))->run();
+            (new WorkerRunner($kernel, $loop))->run();
         } finally {
             Assert::same($events->values, ['loop:before', 'handle']);
             Assert::same($kernel->terminateCalls, 0);

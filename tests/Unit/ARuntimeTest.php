@@ -5,25 +5,40 @@ declare(strict_types=1);
 namespace Rapira\Symfony\Tests\Unit;
 
 use Rapira\Mode;
-use Rapira\Symfony\Runner;
+use Rapira\Symfony\DispatcherRunner;
 use Rapira\Symfony\Tests\Support\NullKernel;
 use Rapira\Symfony\Tests\Support\RuntimeForMode;
+use Rapira\Symfony\Tests\Support\StubHttpDispatcher;
+use Rapira\Symfony\WorkerRunner;
 use Symfony\Component\Runtime\Runner\Symfony\HttpKernelRunner;
 use Testo\Assert;
-use Testo\Expect;
 use Testo\Test;
 
 #[Test]
 final class RuntimeTest
 {
-    public function workerModeSelectsRapiraRunnerAndSetsRuntimeModeBeforeSymfonyInitialization(): void
+    public function workerModeSelectsWorkerRunnerAndSetsRuntimeModeBeforeSymfonyInitialization(): void
     {
         unset($_SERVER['APP_RUNTIME_MODE']);
 
         $runtime = new RuntimeForMode(Mode::Worker, ['debug' => false, 'error_handler' => false]);
 
         Assert::same($_SERVER['APP_RUNTIME_MODE'], 'web=1&worker=1');
-        Assert::true($runtime->getRunner(new NullKernel()) instanceof Runner);
+        Assert::true($runtime->getRunner(new NullKernel()) instanceof WorkerRunner);
+    }
+
+    public function dispatcherModeSelectsDispatcherRunnerAndSetsRuntimeModeBeforeSymfonyInitialization(): void
+    {
+        unset($_SERVER['APP_RUNTIME_MODE']);
+
+        $runtime = new RuntimeForMode(
+            Mode::Dispatcher,
+            ['debug' => false, 'error_handler' => false],
+            new StubHttpDispatcher(),
+        );
+
+        Assert::same($_SERVER['APP_RUNTIME_MODE'], 'web=1&worker=1');
+        Assert::true($runtime->getRunner(new NullKernel()) instanceof DispatcherRunner);
     }
 
     public function classicModeDelegatesToSymfonyRuntime(): void
@@ -36,19 +51,11 @@ final class RuntimeTest
         Assert::true($runtime->getRunner(new NullKernel()) instanceof HttpKernelRunner);
     }
 
-    public function nonHttpApplicationsDelegateInWorkerMode(): void
+    public function nonHttpApplicationsDelegateInResidentModes(): void
     {
-        $runtime = new RuntimeForMode(Mode::Worker, ['debug' => false, 'error_handler' => false]);
-
-        Assert::same($runtime->getRunner(static fn(): int => 17)->run(), 17);
-    }
-
-    public function dispatcherModeRejectsHttpKernelApplications(): void
-    {
-        $runtime = new RuntimeForMode(Mode::Dispatcher, ['debug' => false, 'error_handler' => false]);
-
-        Expect::exception(\LogicException::class)
-            ->withMessage('Rapira Dispatcher mode is not supported for Symfony HttpKernel applications.');
-        $runtime->getRunner(new NullKernel());
+        foreach ([Mode::Worker, Mode::Dispatcher] as $mode) {
+            $runtime = new RuntimeForMode($mode, ['debug' => false, 'error_handler' => false]);
+            Assert::same($runtime->getRunner(static fn(): int => 17)->run(), 17);
+        }
     }
 }
