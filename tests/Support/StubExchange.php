@@ -17,6 +17,8 @@ class StubExchange implements Exchange
 
     public bool $cancelled = false;
     public bool $finalized = false;
+    public ?\Throwable $headFailure = null;
+    public ?\Throwable $bodyFailure = null;
 
     public function __construct(private readonly Request $request) {}
 
@@ -37,11 +39,19 @@ class StubExchange implements Exchange
 
     public function writeHead(int $status, array $headers = []): void
     {
+        if ($this->headFailure !== null) {
+            throw $this->headFailure;
+        }
+
         $this->heads[] = ['status' => $status, 'headers' => $headers];
     }
 
     public function writeBody(string $content, bool $eos = true): void
     {
+        if ($this->bodyFailure !== null) {
+            throw $this->bodyFailure;
+        }
+
         $this->bodies[] = ['content' => $content, 'eos' => $eos];
         $this->finalized = $eos;
     }

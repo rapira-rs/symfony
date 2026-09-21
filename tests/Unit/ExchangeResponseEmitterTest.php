@@ -8,6 +8,7 @@ use Rapira\Exception\WorkDiscardedException;
 use Rapira\Http\Request as RapiraRequest;
 use Rapira\InetAddress;
 use Rapira\Symfony\Internal\ExchangeResponseEmitter;
+use Rapira\Symfony\Internal\ResponseDiscardedException;
 use Rapira\Symfony\Tests\Support\StubExchange;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use Symfony\Component\HttpFoundation\Cookie;
@@ -36,17 +37,50 @@ final class ExchangeResponseEmitterTest
         Assert::same($exchange->bodies, [['content' => 'body', 'eos' => true]]);
     }
 
-    public function suppressesPreparedHeadAndEmptyResponseBodies(): void
+    public function ordinaryHeadRetainsPreparedContentLengthAndEmitsNoBody(): void
     {
-        foreach ([
-            [Request::create('/', 'HEAD'), new Response('must-not-run')],
-            [Request::create('/'), new Response('must-not-run', 204)],
-            [Request::create('/'), new Response('must-not-run', 304)],
-        ] as [$request, $response]) {
-            $exchange = $this->exchange($request->getMethod());
-            (new ExchangeResponseEmitter())->emit($exchange, $request, $response);
+        $exchange = $this->exchange('HEAD');
+        $request = Request::create('/', 'HEAD');
+        $request->attributes->set('rapira.request_method', 'HEAD');
+        $response = new Response('must-not-send', headers: ['Content-Length' => '13']);
+
+        (new ExchangeResponseEmitter())->emit($exchange, $request, $response);
+
+        Assert::same($exchange->heads[0]['headers']['Content-Length'], ['13']);
+        Assert::same($exchange->bodies, [['content' => '', 'eos' => true]]);
+    }
+
+    public function lowercaseHeadIsNotGivenStandardHeadTransportSemantics(): void
+    {
+        $exchange = $this->exchange('head');
+        $request = Request::create('/', 'head');
+        $request->attributes->set('rapira.request_method', 'head');
+
+        (new ExchangeResponseEmitter())->emit($exchange, $request, new Response('body'));
+
+        Assert::same($exchange->bodies, [['content' => 'body', 'eos' => true]]);
+    }
+
+    public function emptyResponsesEmitNoBody(): void
+    {
+        foreach ([204, 304] as $status) {
+            $exchange = $this->exchange();
+            (new ExchangeResponseEmitter())->emit($exchange, Request::create('/'), new Response('must-not-run', $status));
             Assert::same($exchange->bodies, [['content' => '', 'eos' => true]]);
             Assert::false(isset($exchange->heads[0]['headers']['Content-Length']));
+        }
+    }
+
+    public function rejectsTerminalInterimResponsesBeforeWriting(): void
+    {
+        $exchange = $this->exchange();
+        Expect::exception(\LogicException::class)
+            ->withMessage('A terminal Symfony response cannot use an interim HTTP status.');
+        try {
+            (new ExchangeResponseEmitter())->emit($exchange, Request::create('/'), new Response('', 103));
+        } finally {
+            Assert::same($exchange->heads, []);
+            Assert::same($exchange->bodies, []);
         }
     }
 
@@ -63,6 +97,7 @@ final class ExchangeResponseEmitterTest
         try {
             (new ExchangeResponseEmitter())->emit($exchange, Request::create('/'), $response);
             Assert::same(\ob_get_level(), $level + 1);
+            Assert::same(\ob_get_contents(), '');
         } finally {
             \ob_end_clean();
         }
@@ -74,43 +109,126 @@ final class ExchangeResponseEmitterTest
         ]);
     }
 
-    public function restoresBuffersAndPropagatesStreamFailure(): void
+    public function capturesStreamingWriteFailureWithoutLeakingToOuterBuffer(): void
     {
         $exchange = $this->exchange();
+        $exchange->bodyFailure = new WorkDiscardedException('gone');
         $response = new StreamedResponse(static function (): void {
-            echo 'before';
-            throw new \RuntimeException('stream failed');
+            echo 'must-not-leak';
+            \ob_flush();
+            echo 'also-hidden';
         });
-        $level = \ob_get_level();
 
-        Expect::exception(\RuntimeException::class)->withMessage('stream failed');
+        \ob_start();
+        Expect::exception(ResponseDiscardedException::class);
         try {
             (new ExchangeResponseEmitter())->emit($exchange, Request::create('/'), $response);
         } finally {
-            Assert::same(\ob_get_level(), $level);
-            Assert::false($exchange->finalized);
+            Assert::same(\ob_get_contents(), '');
+            \ob_end_clean();
         }
     }
 
-    public function cancellationStopsBeforeCommit(): void
+    public function nonRemovableNestedBufferFailsWithoutHanging(): void
     {
-        $exchange = $this->exchange();
-        $exchange->cancelled = true;
+        $script = \tempnam(\sys_get_temp_dir(), 'rapira-buffer-test-');
+        \file_put_contents($script, <<<'PHP'
+<?php
+require getcwd() . '/vendor/autoload.php';
+$exchange = new Rapira\Symfony\Tests\Support\StubExchange(new Rapira\Http\Request(
+    'GET',
+    'http://localhost/',
+    '/',
+    'localhost',
+    'HTTP/1.1',
+    [],
+    '',
+    new Rapira\InetAddress('127.0.0.1', 40000),
+    new Rapira\InetAddress('127.0.0.1', 8080),
+    null,
+    0.0,
+));
+$response = new Symfony\Component\HttpFoundation\StreamedResponse(static function (): void {
+    ob_start(null, 0, PHP_OUTPUT_HANDLER_CLEANABLE | PHP_OUTPUT_HANDLER_FLUSHABLE);
+    echo 'trapped';
+});
+try {
+    (new Rapira\Symfony\Internal\ExchangeResponseEmitter())->emit(
+        $exchange,
+        Symfony\Component\HttpFoundation\Request::create('/'),
+        $response,
+    );
+} catch (LogicException $exception) {
+    fwrite(STDERR, $exception->getMessage());
+}
+PHP);
 
-        Expect::exception(WorkDiscardedException::class);
+        $output = [];
+        $status = 0;
+        \exec('timeout 5 ' . \escapeshellarg(\PHP_BINARY) . ' ' . \escapeshellarg($script) . ' 2>&1', $output, $status);
+        @\unlink($script);
+
+        Assert::same($status, 0);
+        Assert::true(\str_contains(\implode("\n", $output), 'A nested output buffer cannot be removed safely.'));
+    }
+
+    public function eventStreamResponseIsRejectedWhenAvailable(): void
+    {
+        if (!\class_exists(\Symfony\Component\HttpFoundation\EventStreamResponse::class)) {
+            Assert::true(true);
+
+            return;
+        }
+
+        $exchange = $this->exchange();
+        $response = new \Symfony\Component\HttpFoundation\EventStreamResponse();
+        Expect::exception(\LogicException::class)
+            ->withMessage('Symfony EventStreamResponse is not supported in Rapira Dispatcher mode.');
         try {
-            (new ExchangeResponseEmitter())->emit($exchange, Request::create('/'), new Response('body'));
+            (new ExchangeResponseEmitter())->emit($exchange, Request::create('/'), $response);
         } finally {
             Assert::same($exchange->heads, []);
-            Assert::same($exchange->bodies, []);
+        }
+    }
+
+    public function binaryHeadRetainsFileLengthAndDeleteAfterSendCleansFile(): void
+    {
+        $path = $this->file('0123456789');
+        $exchange = $this->exchange('HEAD');
+        $request = Request::create('/file', 'HEAD');
+        $request->attributes->set('rapira.request_method', 'HEAD');
+        $response = new BinaryFileResponse($path, headers: ['Content-Type' => 'application/octet-stream']);
+        $response->deleteFileAfterSend();
+
+        (new ExchangeResponseEmitter())->emit($exchange, $request, $response);
+
+        Assert::same($exchange->heads[0]['headers']['Content-Length'], ['10']);
+        Assert::same($exchange->bodies, [['content' => '', 'eos' => true]]);
+        Assert::false(\is_file($path));
+    }
+
+    public function emptyBinaryResponseRunsDeleteAfterSendCleanup(): void
+    {
+        foreach ([204, 304] as $status) {
+            $path = $this->file('cleanup');
+            $response = new BinaryFileResponse(
+                $path,
+                $status,
+                ['Content-Type' => 'application/octet-stream'],
+            );
+            $response->deleteFileAfterSend();
+            $exchange = $this->exchange();
+
+            (new ExchangeResponseEmitter())->emit($exchange, Request::create('/file'), $response);
+
+            Assert::same($exchange->bodies, [['content' => '', 'eos' => true]]);
+            Assert::false(\is_file($path));
         }
     }
 
     public function emitsBinaryFilesAndRangesThroughSymfonySendContent(): void
     {
-        $path = \tempnam(\sys_get_temp_dir(), 'rapira-binary-');
-        \file_put_contents($path, '0123456789');
-
+        $path = $this->file('0123456789');
         $exchange = $this->exchange();
         $request = Request::create('/file', 'GET', server: ['HTTP_RANGE' => 'bytes=2-5']);
         $response = new BinaryFileResponse($path, headers: ['Content-Type' => 'application/octet-stream']);
@@ -133,10 +251,15 @@ final class ExchangeResponseEmitterTest
         Assert::false(isset($unsatisfiable->heads[0]['headers']['Content-Length']));
         Assert::same($unsatisfiable->bodies, [['content' => '', 'eos' => true]]);
 
-        $delete = new BinaryFileResponse($path, headers: ['Content-Type' => 'application/octet-stream']);
-        $delete->deleteFileAfterSend();
-        (new ExchangeResponseEmitter())->emit($this->exchange(), Request::create('/file'), $delete);
-        Assert::false(\is_file($path));
+        @\unlink($path);
+    }
+
+    private function file(string $content): string
+    {
+        $path = \tempnam(\sys_get_temp_dir(), 'rapira-binary-');
+        \file_put_contents($path, $content);
+
+        return $path;
     }
 
     private function exchange(string $method = 'GET'): StubExchange

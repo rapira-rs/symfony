@@ -57,7 +57,7 @@ final class DispatcherRunnerTest
         $kernel = new LifecycleKernel($events);
 
         Assert::same($this->runner($kernel, $dispatcher)->run(), 0);
-        Assert::same($kernel->paths, ['/cancelled', '/healthy']);
+        Assert::same($kernel->paths, ['/healthy']);
         Assert::same($kernel->terminated, ['/healthy']);
         Assert::same($cancelled->heads, []);
         Assert::true($healthy->finalized);
@@ -72,7 +72,17 @@ final class DispatcherRunnerTest
         $kernel = new LifecycleKernel($events);
         Assert::same($this->runner($kernel, $dispatcher)->run(), 0);
         Assert::true($healthy->finalized);
-        Assert::same($kernel->terminated, ['/healthy']);
+        Assert::same($kernel->terminated, ['/discarded', '/healthy']);
+
+        $events = [];
+        $dispatcher = new QueueHttpDispatcher([$this->exchange('/terminate-fail')], $events);
+        $kernel = new DiscardingTerminateKernel($events);
+        Expect::exception(WorkDiscardedException::class)->withMessage('application terminate discard');
+        try {
+            $this->runner($kernel, $dispatcher)->run();
+        } finally {
+            Assert::same($dispatcher->receiveCalls, 1);
+        }
 
         $events = [];
         $dispatcher = new QueueHttpDispatcher([$this->exchange('/fail'), $this->exchange('/must-not-run')], $events);
@@ -205,6 +215,26 @@ final class ThrowingDispatcherKernel implements HttpKernelInterface
     {
         $this->events[] = 'handle:' . $request->getPathInfo();
         throw new \RuntimeException('kernel failed');
+    }
+}
+
+final class DiscardingTerminateKernel implements HttpKernelInterface, TerminableInterface
+{
+    /**
+     * @param list<string> $events
+     */
+    public function __construct(private array &$events) {}
+
+    public function handle(Request $request, int $type = self::MAIN_REQUEST, bool $catch = true): Response
+    {
+        $this->events[] = 'handle:' . $request->getPathInfo();
+
+        return new Response('ok');
+    }
+
+    public function terminate(Request $request, Response $response): void
+    {
+        throw new WorkDiscardedException('application terminate discard');
     }
 }
 

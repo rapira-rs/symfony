@@ -75,17 +75,17 @@ Start Rapira with `rapira serve rapira.toml`.
 - **Worker** uses Rapira's SAPI request loop and Symfony's normal `Response::send()` lifecycle.
 - **Classic** delegates to Symfony's standard runtime behavior.
 
-Rapira owns recycling and `max_requests`; this runtime does not apply a second request limit. Dispatcher drain through `ClosedException` exits cleanly. Client cancellation is checked around writes and discarded work does not poison the next request. Unexpected application, adapter, and transport errors propagate so Rapira can recycle the worker.
+Rapira owns recycling and `max_requests`; this runtime does not apply a second request limit. Dispatcher drain through `ClosedException` exits cleanly. Work already cancelled before conversion is skipped. If cancellation happens while emitting a handled response, transport output stops but `kernel->terminate()` still runs; cancellation exceptions thrown by application or termination code are not swallowed. Unexpected application, adapter, termination, and transport programming errors propagate so Rapira can recycle the worker.
 
 ## Dispatcher semantics
 
 Dispatcher mode does not synthesize request superglobals. `$_GET`, `$_POST`, `$_FILES`, `$_COOKIE`, `$_SERVER`, `php://input`, `header()`, native PHP sessions, and libraries that require SAPI request globals should not be used for request handling. Use the Symfony `Request`, response headers, and a Symfony-compatible session implementation.
 
-The conversion preserves the exact request target in `REQUEST_URI`, protocol, repeated headers, cookies, body, parsed forms, nested multipart fields and uploads, TLS state, and network addresses. Non-HTTP values present in the boot-time server bag remain available without leaking boot-time `HTTP_*` values.
+The conversion preserves the exact request target in `REQUEST_URI`, byte-exact raw method for transport decisions, protocol, repeated headers, cookies, body, parsed forms, nested multipart fields and uploads, TLS state, and network addresses. Live request metadata always wins over the non-HTTP boot-time server defaults, and boot-time `HTTP_*` values are excluded.
 
 Multipart uploads are copied to Symfony-owned temporary files. They remain readable through `kernel->terminate()` and are removed after termination. Files moved by application code remain at their destination.
 
-Responses are prepared by HttpFoundation before direct emission. Repeated headers and every `Set-Cookie` value are preserved. Ordinary responses finalize exactly once; streamed and binary responses progressively forward output to Rapira and then send end-of-stream. HEAD, 204, 304, file ranges, 416 responses, temporary files, and `deleteFileAfterSend()` follow Symfony's public `BinaryFileResponse` behavior. Dispatcher mode intentionally does not use `Response::send()`, fibers, or Rapira's zero-copy `sendFile()` yet.
+Responses are prepared by HttpFoundation before direct emission. Repeated headers and every `Set-Cookie` value are preserved. Ordinary responses finalize exactly once; `StreamedResponse`, streamed JSON, and binary responses progressively forward output to Rapira and then send end-of-stream. HEAD retains prepared metadata internally (including binary file length) while Rapira applies its own wire-level HEAD framing; 204, 304, file ranges, 416 responses, temporary files, and `deleteFileAfterSend()` follow Symfony's public behavior. Terminal 100–199 responses other than 101 are rejected because Rapira treats them as interim. Symfony's built-in `EventStreamResponse` is currently rejected because it removes output buffers it does not own; use `StreamedResponse` for server-sent events. Dispatcher mode intentionally does not use `Response::send()`, fibers, or Rapira's zero-copy `sendFile()` yet.
 
 ## Persistent state and resets
 

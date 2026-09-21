@@ -49,8 +49,10 @@ final readonly class DispatcherRequestFactory
         $psrRequest = $psrRequest->withCookieParams($this->parseCookies($source->headers));
 
         $request = $this->httpFoundationFactory->createRequest($psrRequest);
-        $request->server->add($this->server);
+        $request->server->replace($request->server->all() + $this->server);
         $request->server->set('REQUEST_URI', $source->target);
+        $request->server->set('RAPIRA_REQUEST_METHOD', $source->method);
+        $request->attributes->set('rapira.request_method', $source->method);
 
         return new DispatcherRequest($request, $this->uploadPaths($request));
     }

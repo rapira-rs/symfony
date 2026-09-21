@@ -5,14 +5,17 @@ declare(strict_types=1);
 namespace Rapira\Symfony;
 
 use Rapira\Exception\ClosedException;
-use Rapira\Exception\WorkDiscardedException;
 use Rapira\Http\HttpDispatcher;
 use Rapira\Symfony\Internal\DispatcherRequestFactory;
 use Rapira\Symfony\Internal\ExchangeResponseEmitter;
+use Rapira\Symfony\Internal\ResponseDiscardedException;
 use Symfony\Component\HttpKernel\HttpKernelInterface;
 use Symfony\Component\HttpKernel\TerminableInterface;
 use Symfony\Component\Runtime\RunnerInterface;
 
+/**
+ * @internal
+ */
 final readonly class DispatcherRunner implements RunnerInterface
 {
     /**
@@ -40,15 +43,22 @@ final readonly class DispatcherRunner implements RunnerInterface
             $response = null;
 
             try {
+                if ($exchange->isCancelled()) {
+                    continue;
+                }
+
                 $converted = $this->requestFactory->create($exchange);
                 $request = $converted->request;
                 $response = $this->kernel->handle($request);
-                $this->responseEmitter->emit($exchange, $request, $response);
+
+                try {
+                    $this->responseEmitter->emit($exchange, $request, $response);
+                } catch (ResponseDiscardedException) {
+                }
 
                 if ($this->kernel instanceof TerminableInterface) {
                     $this->kernel->terminate($request, $response);
                 }
-            } catch (WorkDiscardedException) {
             } finally {
                 $response = null;
                 $request = null;
