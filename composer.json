@@ -37,6 +37,7 @@
         "symfony/runtime": "^7.4 || ^8.0"
     },
     "require-dev": {
+        "ext-curl": "*",
         "fidry/cpu-core-counter": "^1.2",
         "llm/skills": "^1.14",
         "rapira/testing": "^0.1.6",
