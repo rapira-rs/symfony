@@ -11,6 +11,7 @@ use Rapira\Symfony\Tests\Support\FakeRuntimeLifecycle;
 use Rapira\Symfony\Tests\Support\TestKernel;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 use Testo\Assert;
 use Testo\Expect;
 use Testo\Test;
@@ -91,6 +92,40 @@ final class WorkerModeTest
             'handle:/three', 'terminate:/three', 'sent:3 served:3',
         ]);
         Assert::same($runtime->outputs, ['/one', '/two', '/three']);
+    }
+
+    public function responseIsFinishedBeforeTheRequestTerminates(): void
+    {
+        $runtime = (new FakeRuntime(Mode::Worker, captureOutput: true))
+            ->queue('GET', '/one')
+            ->queue('GET', '/two');
+        $kernel = new TestKernel(terminate: static function () use ($runtime, &$kernel): void {
+            $kernel->events[] = 'finished:' . $runtime->finishedRequests;
+        });
+
+        $this->run($runtime, $kernel);
+
+        Assert::same($kernel->events, [
+            'handle:/one', 'terminate:/one', 'finished:1',
+            'handle:/two', 'terminate:/two', 'finished:2',
+        ]);
+    }
+
+    public function flushingStreamedResponseArrivesWholeAndLeavesNoBufferBehind(): void
+    {
+        $runtime = (new FakeRuntime(Mode::Worker, captureOutput: true))->queue('GET', '/stream');
+        $kernel = new TestKernel(static fn(): Response => new StreamedResponse(static function (): void {
+            echo 'one';
+            \ob_flush();
+            \ob_start();
+            echo 'two';
+        }));
+        $level = \ob_get_level();
+
+        $this->run($runtime, $kernel);
+
+        Assert::same($runtime->outputs, ['onetwo']);
+        Assert::same(\ob_get_level(), $level);
     }
 
     public function requestServedByTheLastHandleRequestCallIsTerminated(): void

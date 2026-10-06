@@ -6,6 +6,7 @@ namespace Rapira\Symfony;
 
 use Rapira\Http\HttpDispatcher;
 use Rapira\Mode;
+use Rapira\Symfony\Internal\ClassicRunner;
 use Rapira\Symfony\Internal\DispatcherRunner;
 use Rapira\Symfony\Internal\WorkerRunner;
 use Symfony\Component\HttpKernel\HttpKernelInterface;
@@ -60,7 +61,7 @@ class Runtime extends SymfonyRuntime
         }
 
         return match ($this->mode) {
-            Mode::Classic => parent::getRunner($application),
+            Mode::Classic => new ClassicRunner($application, (bool) ($this->options['debug'] ?? false)),
             Mode::Worker => new WorkerRunner($application),
             Mode::Dispatcher => new DispatcherRunner($application, self::httpDispatcher()),
         };
