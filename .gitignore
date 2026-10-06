@@ -3,4 +3,6 @@
 /runtime/
 /vendor/
 /composer.lock
+/.env
 *.log
+/coverage.xml
