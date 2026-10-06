@@ -17,29 +17,6 @@ use Symfony\Component\HttpFoundation\File\UploadedFile;
  */
 final readonly class DispatcherRequestFactory
 {
-    private const NON_HTTP_BOOT_SERVER_KEYS = [
-        'DOCUMENT_ROOT',
-        'PATH_TRANSLATED',
-        'PHP_SELF',
-        'SCRIPT_FILENAME',
-        'SCRIPT_NAME',
-    ];
-    private const REQUEST_SERVER_PREFIXES = [
-        'AUTH_',
-        'CONTENT_',
-        'HTTP_',
-        'REMOTE_',
-        'REQUEST_',
-        'SERVER_',
-    ];
-    private const REQUEST_SERVER_KEYS = [
-        'GATEWAY_INTERFACE',
-        'HTTPS',
-        'ORIG_PATH_INFO',
-        'PATH_INFO',
-        'REDIRECT_STATUS',
-    ];
-
     /** @var array<string, mixed> */
     private array $server;
 
@@ -48,29 +25,7 @@ final readonly class DispatcherRequestFactory
 
     public function __construct()
     {
-        /** @var array<string, mixed> $server */
-        $server = $_SERVER;
-        $this->server = \array_filter(
-            $server,
-            static function (mixed $key): bool {
-                if (\in_array($key, self::NON_HTTP_BOOT_SERVER_KEYS, true)) {
-                    return true;
-                }
-                if (\in_array($key, self::REQUEST_SERVER_KEYS, true)) {
-                    return false;
-                }
-
-                foreach (self::REQUEST_SERVER_PREFIXES as $prefix) {
-                    if (\str_starts_with($key, $prefix)) {
-                        return false;
-                    }
-                }
-
-                return true;
-            },
-            \ARRAY_FILTER_USE_KEY,
-        );
-
+        $this->server = BootServer::variables($_SERVER);
         $this->psr17Factory = new Psr17Factory();
         $this->httpFoundationFactory = new HttpFoundationFactory();
     }

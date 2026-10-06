@@ -74,6 +74,28 @@ final class WorkerModeTest
         Assert::notSame($kernel->requests[0], $kernel->requests[1]);
     }
 
+    public function requestMetadataOfTheBootIsNotCarriedIntoRequests(): void
+    {
+        $_SERVER = [
+            'HTTPS' => 'on',
+            'HTTP_X_BOOT' => 'boot',
+            'QUERY_STRING' => 'boot=1',
+            'REMOTE_ADDR' => '192.0.2.1',
+            'SCRIPT_FILENAME' => '/app/public/index.php',
+        ] + $_SERVER;
+        $runtime = (new FakeRuntime(Mode::Worker, captureOutput: true))->queue('GET', '/plain');
+        $kernel = new TestKernel();
+
+        $this->run($runtime, $kernel);
+
+        $request = $kernel->requests[0];
+        Assert::false($request->isSecure());
+        Assert::null($request->headers->get('x-boot'));
+        Assert::null($request->getQueryString());
+        Assert::same($request->getClientIp(), '127.0.0.1');
+        Assert::same($request->server->get('SCRIPT_FILENAME'), '/app/public/index.php');
+    }
+
     public function responseIsSentBeforeTheRequestTerminatesAndTheNextOneIsServed(): void
     {
         $runtime = (new FakeRuntime(Mode::Worker, captureOutput: true))
