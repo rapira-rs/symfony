@@ -61,7 +61,7 @@ Start Rapira with `rapira serve rapira.toml`.
 
 ## Execution modes
 
-- **Dispatcher** converts each `Rapira\Http\Exchange` through `rapira/http` and the Symfony PSR-7 bridge, then writes the HttpFoundation response directly to the exchange. Requests are processed sequentially.
+- **Dispatcher** converts each `Rapira\Http\Exchange` to a Symfony request and writes the HttpFoundation response directly to the exchange. Requests are processed sequentially.
 - **Worker** uses Rapira's SAPI request loop and Symfony's normal `Response::send()` lifecycle.
 - **Classic** delegates to Symfony's standard runtime behavior.
 
