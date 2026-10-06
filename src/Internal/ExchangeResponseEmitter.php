@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Rapira\Symfony\Internal;
 
+use Rapira\Exception\AlreadyFinalizedError;
 use Rapira\Exception\WorkDiscardedException;
 use Rapira\Http\Exception\FileNotSendableException;
 use Rapira\Http\Exception\HeadAlreadyWrittenError;
@@ -73,7 +74,9 @@ final class ExchangeResponseEmitter
      */
     public function emitError(int $status): void
     {
-        if ($this->headWritten || $this->exchange->isFinalized()) {
+        // TODO: also check isFinalized() once https://github.com/rapira-rs/rapira/issues/201 stops it crashing Linux
+        //  workers; tracked in https://github.com/rapira-rs/symfony/issues/2.
+        if ($this->headWritten) {
             return;
         }
 
@@ -81,7 +84,7 @@ final class ExchangeResponseEmitter
         try {
             $this->exchange->writeHead($status, ['Content-Type' => ['text/plain; charset=UTF-8']]);
             $this->exchange->writeBody(Response::$statusTexts[$status] ?? 'Error');
-        } catch (WorkDiscardedException|HeadAlreadyWrittenError) {
+        } catch (WorkDiscardedException|HeadAlreadyWrittenError|AlreadyFinalizedError) {
         }
     }
 

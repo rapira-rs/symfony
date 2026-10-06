@@ -23,6 +23,7 @@ use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use Testo\Assert;
 use Testo\Expect;
+use Testo\Skip;
 use Testo\Test;
 
 /**
@@ -57,6 +58,7 @@ final class DispatcherModeTest
         Assert::notSame($kernel->requests[0], $kernel->requests[1]);
     }
 
+    #[Skip('rapira-rs/rapira#201: isCancelled() crashes Linux workers, so the bridge does not call it')]
     public function cancelledExchangeIsSkipped(): void
     {
         $cancelled = FakeExchange::for('/cancelled');

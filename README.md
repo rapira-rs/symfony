@@ -57,7 +57,7 @@ The same setup stays valid outside Rapira: under php-fpm or the CLI the Runtime 
 
 - **Classic** sends the response, calls `rapira_finish_request()` so the client has its answer, then runs `kernel->terminate()`.
 - **Worker** loops over `Rapira\handle_request()`. Per request: the request is built from the superglobals, the response is sent and finished, then terminate runs and cyclic garbage is collected.
-- **Dispatcher** takes each `Rapira\Http\Exchange` from the HTTP dispatcher, converts it to a Symfony `Request` and writes the response straight into the exchange. Exchanges are served one at a time; one cancelled while it was queued is skipped.
+- **Dispatcher** takes each `Rapira\Http\Exchange` from the HTTP dispatcher, converts it to a Symfony `Request` and writes the response straight into the exchange. Exchanges are served one at a time.
 
 Worker and Dispatcher serve only an `HttpKernelInterface` application and refuse anything else with a `LogicException`. Rapira owns recycling and `max_requests`; the Runtime adds no request limit of its own.
 
