@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace Rapira\Symfony\Tests\Feature;
 
 use Rapira\Exception\WorkDiscardedException;
+use Rapira\Http\Exchange;
+use Rapira\Http\Multipart;
+use Rapira\Http\UploadedFile;
 use Rapira\Mode;
 use Rapira\Sdk\Testing\Double\FakeRuntime;
 use Rapira\Sdk\Testing\Double\Http\FakeExchange;
@@ -14,9 +17,11 @@ use Rapira\Symfony\Tests\Support\ForeignDispatcher;
 use Rapira\Symfony\Tests\Support\ScriptedExchange;
 use Rapira\Symfony\Tests\Support\TestKernel;
 use Symfony\Component\HttpFoundation\EventStreamResponse;
+use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Testo\Assert;
 use Testo\Expect;
+use Testo\Skip;
 use Testo\Test;
 
 /**
@@ -167,6 +172,64 @@ final class DispatcherModeTest
 
         Assert::false(\in_array(200, $exchange->heads, true));
         Assert::string($exchange->exchange->getBody())->notContains('event');
+    }
+
+    #[Skip('known bug: a request that fails to convert kills the loop instead of answering 500')]
+    public function requestConversionFailureIsAnsweredWithAnErrorAndTheLoopGoesOn(): void
+    {
+        $missing = \sys_get_temp_dir() . '/rapira-missing-' . \bin2hex(\random_bytes(8));
+        $failing = FakeExchange::for('/upload', 'POST', body: new Multipart([], [
+            new UploadedFile('file', 'named.txt', 'text/plain', [], $missing, 10),
+        ]));
+
+        $this->assertAnsweredWith500AndTheNextServed($failing, $failing, new TestKernel());
+    }
+
+    #[Skip('known bug: an EventStreamResponse kills the loop instead of answering 500')]
+    public function eventStreamResponseIsAnsweredWithAnErrorAndTheLoopGoesOn(): void
+    {
+        $failing = FakeExchange::for('/events');
+        $kernel = new TestKernel(static fn(Request $request): Response => $request->getPathInfo() === '/events'
+            ? new EventStreamResponse(static fn(): iterable => yield 'event')
+            : new Response($request->getPathInfo()));
+
+        $this->assertAnsweredWith500AndTheNextServed($failing, $failing, $kernel);
+    }
+
+    #[Skip('known bug: a terminal 1xx response kills the loop instead of answering 500')]
+    public function terminalInterimStatusIsAnsweredWithAnErrorAndTheLoopGoesOn(): void
+    {
+        $failing = FakeExchange::for('/early');
+        $kernel = new TestKernel(static fn(Request $request): Response => $request->getPathInfo() === '/early'
+            ? new Response('', 103)
+            : new Response($request->getPathInfo()));
+
+        $this->assertAnsweredWith500AndTheNextServed($failing, $failing, $kernel);
+    }
+
+    #[Skip('known bug: a header value the host rejects kills the loop instead of answering 500')]
+    public function headerValueTheHostRejectsIsAnsweredWithAnErrorAndTheLoopGoesOn(): void
+    {
+        $failing = new ScriptedExchange(FakeExchange::for('/bad-header'));
+        $kernel = new TestKernel(static fn(Request $request): Response => $request->getPathInfo() === '/bad-header'
+            ? new Response('body', 200, ['X-Bad' => "one\r\ntwo"])
+            : new Response($request->getPathInfo()));
+
+        $this->assertAnsweredWith500AndTheNextServed($failing, $failing->exchange, $kernel);
+    }
+
+    /**
+     * @param FakeExchange $answer What $failing records the answer in.
+     */
+    private function assertAnsweredWith500AndTheNextServed(Exchange $failing, FakeExchange $answer, TestKernel $kernel): void
+    {
+        $next = FakeExchange::for('/next');
+
+        $this->serve($kernel, new FakeHttpDispatcher($failing, $next));
+
+        Assert::same($answer->status, 500);
+        Assert::true($answer->isFinalized());
+        Assert::same($next->getBody(), '/next');
     }
 
     private function serve(TestKernel $kernel, FakeHttpDispatcher $dispatcher): void

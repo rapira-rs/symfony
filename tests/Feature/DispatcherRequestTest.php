@@ -16,10 +16,12 @@ use Rapira\Sdk\Testing\Double\Http\FakeHttpDispatcher;
 use Rapira\Symfony\Tests\Support\FakeRuntimeLifecycle;
 use Rapira\Symfony\Tests\Support\TestKernel;
 use Rapira\UnixAddress;
+use Symfony\Component\HttpFoundation\Cookie;
 use Symfony\Component\HttpFoundation\File\UploadedFile;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Testo\Assert;
+use Testo\Skip;
 use Testo\Test;
 
 /**
@@ -152,6 +154,19 @@ final class DispatcherRequestTest
         ]);
     }
 
+    #[Skip('known bug: a form content type in another letter case is not parsed')]
+    public function urlEncodedFormIsParsedWhateverTheContentTypeCase(): void
+    {
+        $request = $this->serveOne(FakeExchange::for(
+            '/form',
+            'POST',
+            ['content-type' => ['Application/X-WWW-Form-Urlencoded']],
+            'user[name]=Ada',
+        ));
+
+        Assert::same($request->request->all(), ['user' => ['name' => 'Ada']]);
+    }
+
     public function multipartFieldsAndFilesKeepTheirNestingAndUploadCopiesAreRemovedAfterwards(): void
     {
         $source = self::file('upload-body');
@@ -232,6 +247,51 @@ final class DispatcherRequestTest
         Assert::same(\file_get_contents($destination), 'keep');
         @\unlink($destination);
         @\unlink($source);
+    }
+
+    #[Skip('known bug: dispatcher cookies are not URL-decoded')]
+    public function cookieValuesAreUrlDecoded(): void
+    {
+        $request = $this->serveOne(FakeExchange::for('/', headers: ['cookie' => ['sid=a%3Ab%3D; plain=a%20b']]));
+
+        Assert::same($request->cookies->all(), ['sid' => 'a:b=', 'plain' => 'a b']);
+    }
+
+    #[Skip('known bug: with duplicate dispatcher cookie names the last one wins instead of the first')]
+    public function firstOfDuplicateCookieNamesWins(): void
+    {
+        $request = $this->serveOne(FakeExchange::for('/', headers: ['cookie' => ['a=1; a=2', 'a=3']]));
+
+        Assert::same($request->cookies->get('a'), '1');
+    }
+
+    #[Skip('known bug: several Cookie headers are joined with ", " instead of "; "')]
+    public function severalCookieHeadersAreJoinedAsOneCookieList(): void
+    {
+        $request = $this->serveOne(FakeExchange::for('/', headers: ['cookie' => ['a=1', 'b=2']]));
+
+        Assert::same($request->cookies->all(), ['a' => '1', 'b' => '2']);
+        Assert::same($request->headers->get('cookie'), 'a=1; b=2');
+        Assert::same($request->server->get('HTTP_COOKIE'), 'a=1; b=2');
+    }
+
+    #[Skip('known bug: dispatcher cookies are not URL-decoded, so a cookie Symfony set does not round-trip')]
+    public function cookieSetBySymfonyRoundTrips(): void
+    {
+        $value = 'a:b= c;d/é';
+        $set = FakeExchange::for('/set');
+        $this->serve(new TestKernel(static function () use ($value): Response {
+            $response = new Response();
+            $response->headers->setCookie(new Cookie('sid', $value));
+
+            return $response;
+        }), $set);
+        FakeRuntime::reset();
+        $cookie = \explode(';', $set->headers['Set-Cookie'][0], 2)[0];
+
+        $request = $this->serveOne(FakeExchange::for('/read', headers: ['cookie' => [$cookie]]));
+
+        Assert::same($request->cookies->get('sid'), $value);
     }
 
     /**
