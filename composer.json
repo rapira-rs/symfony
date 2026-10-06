@@ -11,10 +11,20 @@
         "worker"
     ],
     "homepage": "https://github.com/rapira-rs/symfony",
+    "support": {
+        "issues": "https://github.com/rapira-rs/symfony/issues",
+        "source": "https://github.com/rapira-rs/symfony"
+    },
     "authors": [
         {
             "name": "Aleksei Gagarin",
             "homepage": "https://github.com/roxblnfk"
+        }
+    ],
+    "funding": [
+        {
+            "type": "boosty",
+            "url": "https://boosty.to/roxblnfk"
         }
     ],
     "require": {
@@ -28,8 +38,15 @@
     },
     "require-dev": {
         "fidry/cpu-core-counter": "^1.2",
+        "llm/skills": "^1.14",
+        "rapira/testing": "^0.1.6",
+        "roxblnfk/unpoly": "^1.8",
+        "shipmonk/composer-dependency-analyser": "^1.8.4",
         "spiral/code-style": "^2.3.1",
-        "testo/testo": "^0.10.42",
+        "testo/assert": "^0.1.17",
+        "testo/lifecycle": "^0.1.9",
+        "testo/test": "^0.1.8",
+        "testo/testo": "^0.10.55",
         "vimeo/psalm": "^7"
     },
     "autoload": {
@@ -51,6 +68,7 @@
     },
     "config": {
         "allow-plugins": {
+            "llm/skills": true,
             "symfony/runtime": true
         },
         "sort-packages": true
@@ -58,8 +76,11 @@
     "scripts": {
         "cs:diff": "php-cs-fixer fix --dry-run -v --diff",
         "cs:fix": "php-cs-fixer fix -v",
+        "dependency-analyser": "composer-dependency-analyser",
         "psalm": "psalm",
         "psalm:ci": "psalm --output-format=github --show-info=false --stats --threads=4",
-        "test": "testo"
+        "test": "testo",
+        "test:unit": "testo --suite=Unit",
+        "test:acceptance": "testo --suite=Acceptance"
     }
 }
