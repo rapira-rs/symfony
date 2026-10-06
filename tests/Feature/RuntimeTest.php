@@ -13,7 +13,9 @@ use Rapira\Symfony\Runtime;
 use Rapira\Symfony\Tests\Support\TestKernel;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpFoundation\StreamedResponse;
+use Symfony\Component\HttpKernel\HttpKernelInterface;
 use Testo\Assert;
+use Testo\Expect;
 use Testo\Test;
 
 /**
@@ -92,17 +94,33 @@ final class RuntimeTest
         Assert::same($kernel->events, ['handle:/classic', 'terminate:/classic']);
     }
 
-    /**
-     * Pins the current delegation to Symfony; whether a resident mode should instead keep such an
-     * application alive is still open.
-     */
-    public function nonHttpApplicationRunsOnceInResidentModes(): void
+    public function nonHttpApplicationIsRefusedInWorkerMode(): never
     {
-        foreach ([Mode::Worker, Mode::Dispatcher] as $mode) {
-            (new FakeRuntime($mode, new FakeHttpDispatcher()))->install();
+        (new FakeRuntime(Mode::Worker))->install();
 
-            Assert::same(self::runtime()->getRunner(static fn(): int => 17)->run(), 17);
-        }
+        Expect::exception(\LogicException::class)->withMessage(
+            'Rapira Worker mode serves only an ' . HttpKernelInterface::class . ' application; got Closure.',
+        );
+
+        self::runtime()->getRunner(static fn(): int => 17);
+    }
+
+    public function nonHttpApplicationIsRefusedInDispatcherMode(): never
+    {
+        (new FakeRuntime(Mode::Dispatcher, new FakeHttpDispatcher()))->install();
+
+        Expect::exception(\LogicException::class)->withMessage(
+            'Rapira Dispatcher mode serves only an ' . HttpKernelInterface::class . ' application; got Closure.',
+        );
+
+        self::runtime()->getRunner(static fn(): int => 17);
+    }
+
+    public function nonHttpApplicationRunsThroughSymfonyInClassicMode(): void
+    {
+        (new FakeRuntime(Mode::Classic))->install();
+
+        Assert::same(self::runtime()->getRunner(static fn(): int => 17)->run(), 17);
     }
 
     /**
