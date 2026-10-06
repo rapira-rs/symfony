@@ -35,6 +35,7 @@ final class ExchangeResponseEmitterTest
         Assert::same($exchange->heads[0]['headers']['X-Repeat'], ['one', 'two']);
         Assert::count($exchange->heads[0]['headers']['Set-Cookie'], 2);
         Assert::same($exchange->bodies, [['content' => 'body', 'eos' => true]]);
+        Assert::same($exchange->cancellationChecks, 0);
     }
 
     public function ordinaryHeadRetainsPreparedContentLengthAndEmitsNoBody(): void

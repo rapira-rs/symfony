@@ -17,6 +17,7 @@ class StubExchange implements Exchange
 
     public bool $cancelled = false;
     public bool $finalized = false;
+    public int $cancellationChecks = 0;
     public ?\Throwable $headFailure = null;
     public ?\Throwable $bodyFailure = null;
 
@@ -34,6 +35,8 @@ class StubExchange implements Exchange
 
     public function isCancelled(): bool
     {
+        ++$this->cancellationChecks;
+
         return $this->cancelled;
     }
 

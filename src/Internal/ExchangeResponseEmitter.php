@@ -44,17 +44,16 @@ final readonly class ExchangeResponseEmitter
             $response->headers->remove('Content-Length');
         }
 
-        $this->checkCancellation($exchange);
         /** @var int<100, 599> $status */
         $status = $response->getStatusCode();
-        $this->writeHead($exchange, $status, $this->headers($response));
+        $headers = $this->headers($response);
 
         if ($rawMethod === 'HEAD' || $response->isEmpty()) {
+            $this->writeHead($exchange, $status, $headers);
             if ($response instanceof BinaryFileResponse) {
                 $this->sendContent($exchange, $response, false);
             }
 
-            $this->checkCancellation($exchange);
             $this->writeBody($exchange, '');
 
             return;
@@ -62,14 +61,14 @@ final readonly class ExchangeResponseEmitter
 
         $content = $response->getContent();
         if ($content !== false) {
-            $this->checkCancellation($exchange);
+            $this->writeHead($exchange, $status, $headers);
             $this->writeBody($exchange, $content);
 
             return;
         }
 
+        $this->writeHead($exchange, $status, $headers);
         $this->sendContent($exchange, $response, true);
-        $this->checkCancellation($exchange);
         $this->writeBody($exchange, '');
     }
 
@@ -102,7 +101,6 @@ final readonly class ExchangeResponseEmitter
             }
 
             try {
-                $this->checkCancellation($exchange);
                 $this->writeBody($exchange, $chunk, false);
             } catch (\Throwable $exception) {
                 $failure = $exception;
@@ -180,13 +178,6 @@ final readonly class ExchangeResponseEmitter
             $exchange->writeBody($content, $eos);
         } catch (WorkDiscardedException $exception) {
             throw new ResponseDiscardedException($exception);
-        }
-    }
-
-    private function checkCancellation(Exchange $exchange): void
-    {
-        if ($exchange->isCancelled()) {
-            throw new ResponseDiscardedException();
         }
     }
 }
