@@ -16,9 +16,11 @@ use Rapira\Symfony\Tests\Support\ScriptedExchange;
 use Rapira\Symfony\Tests\Support\TestKernel;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use Symfony\Component\HttpFoundation\Cookie;
+use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use Testo\Assert;
+use Testo\Expect;
 use Testo\Lifecycle\AfterTest;
 use Testo\Test;
 
@@ -50,6 +52,86 @@ final class DispatcherResponseTest
         Assert::count($exchange->headers['Set-Cookie'], 2);
         Assert::same($exchange->chunks, ['body']);
         Assert::true($exchange->isFinalized());
+    }
+
+    public function bodyLongerThanOneWriteIsSplitUnderItsLength(): void
+    {
+        $exchange = FakeExchange::for('/');
+        $body = \str_repeat('x', 8_388_608) . 'tail';
+
+        $this->serve(static fn(): Response => new Response($body), $exchange);
+
+        Assert::same($exchange->headers['Content-Length'], [(string) \strlen($body)]);
+        Assert::same(\array_map(\strlen(...), $exchange->chunks), [8_388_608, 4]);
+        Assert::true($exchange->getBody() === $body);
+        Assert::true($exchange->isFinalized());
+    }
+
+    public function outputPrintedWhileHandlingLeadsTheBodyAndDropsAStaleLength(): void
+    {
+        $buffered = FakeExchange::for('/buffered');
+        $streamed = FakeExchange::for('/streamed');
+        $kernel = new TestKernel(static function (Request $request): Response {
+            echo 'pre-';
+
+            return $request->getPathInfo() === '/buffered'
+                ? new Response('body', headers: ['Content-Length' => '4'])
+                : new StreamedResponse(static function (): void {
+                    echo 'body';
+                }, headers: ['Content-Length' => '4']);
+        });
+        $level = \ob_get_level();
+
+        $this->serveWith($kernel, $buffered, $streamed);
+
+        Assert::same(\ob_get_level(), $level);
+        Assert::same($buffered->getBody(), 'pre-body');
+        Assert::null($buffered->header('content-length'));
+        Assert::same($streamed->getBody(), 'pre-body');
+        Assert::null($streamed->header('content-length'));
+    }
+
+    public function outputPrintedWhileHandlingNeverLeadsAFile(): void
+    {
+        $path = self::file('0123456789');
+        $exchange = FakeExchange::for('/file');
+        $kernel = new TestKernel(static function () use ($path): Response {
+            echo 'stray';
+
+            return new BinaryFileResponse($path, headers: ['Content-Type' => 'text/plain']);
+        });
+
+        try {
+            $this->serveWith($kernel, $exchange);
+        } finally {
+            @\unlink($path);
+        }
+
+        Assert::same($exchange->headers['Content-Length'], ['10']);
+        Assert::same($exchange->chunks, []);
+        Assert::count($exchange->sentFiles, 1);
+    }
+
+    public function outputOfAFailedHandleIsDroppedAndTheBufferRestored(): never
+    {
+        $kernel = new TestKernel(static function (): never {
+            echo 'partial';
+            \ob_start();
+            echo 'nested';
+
+            throw new \RuntimeException('kernel failed');
+        });
+        $level = \ob_get_level();
+
+        Expect::exception(\RuntimeException::class)->withMessage('kernel failed');
+        \ob_start();
+        try {
+            $this->serveWith($kernel, FakeExchange::for('/'));
+        } finally {
+            $leaked = \ob_get_clean();
+            Assert::same(\ob_get_level(), $level);
+            Assert::same($leaked, '');
+        }
     }
 
     public function headRequestKeepsThePreparedContentLengthAndSendsNoBody(): void

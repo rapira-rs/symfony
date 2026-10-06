@@ -51,6 +51,22 @@ final readonly class DispatcherRunner implements RunnerInterface
         }
     }
 
+    /**
+     * Ends the buffer opened at $level + 1 and returns what was printed into it, buffers the application
+     * opened above it and left behind included. Nothing else reaches the client: the SAPI output of a
+     * dispatcher is not a response.
+     */
+    private static function takeOutput(int $level): string
+    {
+        while (\ob_get_level() > $level + 1) {
+            @\ob_end_flush() or throw new OutputBufferException('A nested output buffer cannot be removed safely.');
+        }
+        \ob_get_level() === $level + 1
+            or throw new OutputBufferException('The application removed the Dispatcher output buffer.');
+
+        return (string) \ob_get_clean();
+    }
+
     private static function report(string $message, \Throwable $exception): void
     {
         \Rapira\log($message, LogLevel::Error, ['exception' => $exception]);
@@ -76,10 +92,16 @@ final readonly class DispatcherRunner implements RunnerInterface
 
         try {
             $request = $converted->request;
-            $response = $this->kernel->handle($request);
+            $level = \ob_get_level();
+            \ob_start();
+            try {
+                $response = $this->kernel->handle($request);
+            } finally {
+                $output = self::takeOutput($level);
+            }
 
             try {
-                $emitter->emit($request, $response);
+                $emitter->emit($request, $response, $output);
             } catch (ResponseDiscardedException) {
             } catch (UnsentResponseException $exception) {
                 self::report('The Symfony response could not be sent.', $exception->getPrevious() ?? $exception);
