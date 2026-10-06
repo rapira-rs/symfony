@@ -97,9 +97,40 @@ final class DispatcherRequestTest
         Assert::same($request->getContent(), '{"binary":"\u0000"}');
         Assert::same($request->server->get('APP_ENV'), 'test');
         Assert::same($request->server->get('APP_CUSTOM_SETTING'), 'kept');
-        Assert::same($request->server->get('SCRIPT_FILENAME'), '/app/public/index.php');
+        Assert::false($request->server->has('SCRIPT_FILENAME'));
         Assert::null($request->headers->get('boot-only'));
         Assert::same([$_SERVER, $_GET, $_POST, $_COOKIE, $_FILES], $globals);
+    }
+
+    /**
+     * Rapira serves from the root, with no document root or script to locate: the base URL Symfony
+     * derives from the script location of the boot would only cut a prefix off the path.
+     */
+    public function scriptLocationOfTheBootIsLeftOutSoUrlsAreRootRelative(): void
+    {
+        $_SERVER = [
+            'DOCUMENT_ROOT' => '/app/public',
+            'ORIG_SCRIPT_NAME' => '/index.php',
+            'PATH_TRANSLATED' => '/app/public/index.php',
+            'PHP_SELF' => '/index.php',
+            'SCRIPT_FILENAME' => '/app/public/index.php',
+            'SCRIPT_NAME' => '/index.php',
+        ] + $_SERVER;
+        $kernel = new TestKernel();
+
+        $this->serve($kernel, FakeExchange::for('/blog/post?page=2'), FakeExchange::for('/index.php/blog'));
+
+        [$path, $script] = $kernel->requests;
+        foreach (['DOCUMENT_ROOT', 'ORIG_SCRIPT_NAME', 'PATH_TRANSLATED', 'PHP_SELF', 'SCRIPT_FILENAME', 'SCRIPT_NAME'] as $key) {
+            Assert::false($path->server->has($key), $key);
+        }
+        Assert::same($path->getBaseUrl(), '');
+        Assert::same($path->getBasePath(), '');
+        Assert::same($path->getPathInfo(), '/blog/post');
+        Assert::same($path->getUriForPath('/feed'), 'http://localhost:8080/feed');
+        Assert::same($path->getUri(), 'http://localhost:8080/blog/post?page=2');
+        Assert::same($script->getBaseUrl(), '');
+        Assert::same($script->getPathInfo(), '/index.php/blog');
     }
 
     public function requestMetadataOfTheBootIsNotInheritedAndTheListenerIsKept(): void
