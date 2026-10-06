@@ -2,9 +2,8 @@
 
 declare(strict_types=1);
 
-namespace Rapira\Symfony;
+namespace Rapira\Symfony\Internal;
 
-use Rapira\Symfony\Internal\RequestLoop;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpKernel\HttpKernelInterface;
 use Symfony\Component\HttpKernel\TerminableInterface;
@@ -20,7 +19,6 @@ final readonly class WorkerRunner implements RunnerInterface
      */
     public function __construct(
         private HttpKernelInterface $kernel,
-        private RequestLoop $requestLoop,
     ) {}
 
     #[\Override]
@@ -39,7 +37,7 @@ final readonly class WorkerRunner implements RunnerInterface
             $request = null;
             $response = null;
 
-            $handled = $this->requestLoop->handle(function () use ($server, &$request, &$response): bool {
+            $handled = \Rapira\handle_request(function () use ($server, &$request, &$response): bool {
                 $_SERVER += $server;
 
                 $request = Request::createFromGlobals();

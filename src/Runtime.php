@@ -6,14 +6,15 @@ namespace Rapira\Symfony;
 
 use Rapira\Http\HttpDispatcher;
 use Rapira\Mode;
-use Rapira\Symfony\Internal\DispatcherRequestFactory;
-use Rapira\Symfony\Internal\ExchangeResponseEmitter;
-use Rapira\Symfony\Internal\NativeRequestLoop;
+use Rapira\Symfony\Internal\DispatcherRunner;
+use Rapira\Symfony\Internal\WorkerRunner;
 use Symfony\Component\HttpKernel\HttpKernelInterface;
 use Symfony\Component\Runtime\RunnerInterface;
 use Symfony\Component\Runtime\SymfonyRuntime;
 
 /**
+ * Symfony Runtime that serves an HTTP kernel in the mode the Rapira host launched the process in.
+ *
  * @api
  * @psalm-consistent-constructor
  */
@@ -38,14 +39,13 @@ class Runtime extends SymfonyRuntime
      *     project_dir_var?: string|false,
      *     dotenv_overload?: ?bool,
      *     dotenv_extra_paths?: ?string[],
-     *     worker_loop_max?: int,
      * } $options
      */
     public function __construct(array $options = [])
     {
-        $this->mode = $this->getMode();
+        $this->mode = \Rapira\get_mode();
 
-        if ($this->mode === Mode::Worker || $this->mode === Mode::Dispatcher) {
+        if ($this->mode !== Mode::Classic) {
             $_SERVER['APP_RUNTIME_MODE'] = 'web=1&worker=1';
         }
 
@@ -61,39 +61,18 @@ class Runtime extends SymfonyRuntime
 
         return match ($this->mode) {
             Mode::Classic => parent::getRunner($application),
-            Mode::Worker => new WorkerRunner($application, new NativeRequestLoop()),
-            Mode::Dispatcher => new DispatcherRunner(
-                $application,
-                $this->getHttpDispatcher(),
-                new DispatcherRequestFactory(),
-                new ExchangeResponseEmitter(),
-            ),
+            Mode::Worker => new WorkerRunner($application),
+            Mode::Dispatcher => new DispatcherRunner($application, self::httpDispatcher()),
         };
     }
 
-    /**
-     * @psalm-suppress MissingPureAnnotation
-     * @psalm-suppress UndefinedFunction The function is provided by the Rapira extension and its contract.
-     * @psalm-suppress MixedReturnStatement
-     */
-    protected function getMode(): Mode
-    {
-        return \Rapira\get_mode();
-    }
-
-    /**
-     * @psalm-suppress MissingPureAnnotation
-     * @psalm-suppress UndefinedFunction The function is provided by the Rapira extension and its contract.
-     */
-    protected function getHttpDispatcher(): HttpDispatcher
+    private static function httpDispatcher(): HttpDispatcher
     {
         $dispatcher = \Rapira\get_dispatcher();
-        if (!$dispatcher instanceof HttpDispatcher) {
-            throw new \LogicException(\sprintf(
-                'Rapira Dispatcher mode requires an HTTP dispatcher; got %s.',
-                $dispatcher::class,
-            ));
-        }
+        $dispatcher instanceof HttpDispatcher or throw new \LogicException(\sprintf(
+            'Rapira Dispatcher mode requires an HTTP dispatcher; got %s.',
+            $dispatcher::class,
+        ));
 
         return $dispatcher;
     }
