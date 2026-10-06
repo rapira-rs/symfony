@@ -14,6 +14,7 @@ use Rapira\InetAddress;
 use Rapira\Symfony\DispatcherRunner;
 use Rapira\Symfony\Internal\DispatcherRequestFactory;
 use Rapira\Symfony\Internal\ExchangeResponseEmitter;
+use Rapira\Symfony\Tests\Support\IsolatesProcessState;
 use Rapira\Symfony\Tests\Support\StubExchange;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -26,6 +27,8 @@ use Testo\Test;
 #[Test]
 final class DispatcherRunnerTest
 {
+    use IsolatesProcessState;
+
     public function handlesSequentialFreshRequestsAndTerminatesBeforeReceivingNext(): void
     {
         $events = [];
@@ -39,7 +42,7 @@ final class DispatcherRunnerTest
 
         Assert::same($result, 0);
         Assert::same($kernel->paths, ['/one', '/two']);
-        Assert::false($kernel->requestIds[0] === $kernel->requestIds[1]);
+        Assert::false($kernel->requests[0] === $kernel->requests[1]);
         Assert::same($events, [
             'receive', 'handle:/one', 'terminate:/one',
             'receive', 'handle:/two', 'terminate:/two',
@@ -175,8 +178,8 @@ final class LifecycleKernel implements HttpKernelInterface, TerminableInterface
     /** @var list<string> */
     public array $paths = [];
 
-    /** @var list<int> */
-    public array $requestIds = [];
+    /** @var list<Request> */
+    public array $requests = [];
 
     /** @var list<string> */
     public array $terminated = [];
@@ -190,7 +193,7 @@ final class LifecycleKernel implements HttpKernelInterface, TerminableInterface
     {
         $path = $request->getPathInfo();
         $this->paths[] = $path;
-        $this->requestIds[] = \spl_object_id($request);
+        $this->requests[] = $request;
         $this->events[] = 'handle:' . $path;
 
         return new Response($path);

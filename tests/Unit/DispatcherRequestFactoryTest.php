@@ -11,6 +11,7 @@ use Rapira\Http\UploadedFile as RapiraUploadedFile;
 use Rapira\InetAddress;
 use Rapira\UnixAddress;
 use Rapira\Symfony\Internal\DispatcherRequestFactory;
+use Rapira\Symfony\Tests\Support\IsolatesProcessState;
 use Symfony\Component\HttpFoundation\File\UploadedFile;
 use Testo\Assert;
 use Testo\Expect;
@@ -19,6 +20,8 @@ use Testo\Test;
 #[Test]
 final class DispatcherRequestFactoryTest
 {
+    use IsolatesProcessState;
+
     public function convertsRequestWithoutMutatingGlobals(): void
     {
         $_SERVER = [
