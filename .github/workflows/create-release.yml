@@ -1,0 +1,40 @@
+---
+
+# https://github.com/googleapis/release-please/blob/main/docs/customizing.md
+# https://github.com/googleapis/release-please-action
+
+on:  # yamllint disable-line rule:truthy
+  push:
+    branches:
+      - 1.x
+  # Manual re-trigger, mirroring release-please's own post-merge run.
+  workflow_dispatch:
+
+name: 📦 Create release
+
+# Serialize release runs so a release-creation run is never interrupted or raced
+# by another (e.g. a feature PR merged right before the release PR).
+concurrency:
+  group: release-please-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🎉 Create release
+        uses: googleapis/release-please-action@v5
+        with:
+          # Events produced with GITHUB_TOKEN do not trigger other workflows, so
+          # CI won't run on the release PR itself. Swap for a PAT / GitHub App
+          # token if the release PR needs the full CI cycle.
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: .github/release-please/config.json
+          manifest-file: .github/release-please/version.json
+          target-branch: 1.x
+
+...

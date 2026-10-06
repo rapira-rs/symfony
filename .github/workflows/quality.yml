@@ -13,7 +13,7 @@ jobs:
     timeout-minutes: 5
     runs-on: ubuntu-latest
     env:
-      COMPOSER_ROOT_VERSION: 1.x-dev
+      COMPOSER_ROOT_VERSION: '0.1.x-dev'
     steps:
       - name: Check out the codebase
         uses: actions/checkout@v6
