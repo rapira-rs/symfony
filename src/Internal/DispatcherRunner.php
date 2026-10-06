@@ -47,6 +47,8 @@ final readonly class DispatcherRunner implements RunnerInterface
             $this->serve($exchange);
             // Held across receive(), an exchange left unfinalized would stay open until the next one arrives.
             $exchange = null;
+            // TODO: a full collection after every exchange can cost more than the exchange on a large
+            //  application; make it configurable, see https://github.com/rapira-rs/sdk-php/issues/14
             \gc_collect_cycles();
         }
     }

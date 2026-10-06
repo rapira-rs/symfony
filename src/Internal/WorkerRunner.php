@@ -31,6 +31,8 @@ final readonly class WorkerRunner implements RunnerInterface
 
         $boot = BootServer::variables($_SERVER, script: true);
         while ($this->serveNext($boot)) {
+            // TODO: a full collection after every request can cost more than the request on a large
+            //  application; make it configurable, see https://github.com/rapira-rs/sdk-php/issues/14
             \gc_collect_cycles();
         }
 
