@@ -20,7 +20,6 @@ use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
-use Testo\Skip;
 use Testo\Test;
 
 /**
@@ -188,7 +187,6 @@ final class DispatcherResponseTest
         Assert::false(\is_file($path));
     }
 
-    #[Skip('known bug: a HEAD request reads the whole file of a BinaryFileResponse')]
     public function headRequestForAFileDoesNotReadIt(): void
     {
         $path = self::file('0123456789');
@@ -237,20 +235,124 @@ final class DispatcherResponseTest
         $range = FakeExchange::for('/file', headers: ['range' => ['bytes=2-5']]);
         $unsatisfiable = FakeExchange::for('/file', headers: ['range' => ['bytes=999-1000']]);
 
+        // A file handed to the host is read after the response is emitted, so it has to outlive the checks.
         try {
             $this->serve($respond, $range, $unsatisfiable);
+
+            Assert::same($range->status, 206);
+            Assert::same($range->headers['Content-Range'], ['bytes 2-5/10']);
+            Assert::same(self::deliveredBody($range), '2345');
+            Assert::true($range->isFinalized());
+            Assert::same($unsatisfiable->status, 416);
+            Assert::null($unsatisfiable->header('content-length'));
+            Assert::same(self::deliveredBody($unsatisfiable), '');
+            Assert::true($unsatisfiable->isFinalized());
+        } finally {
+            @\unlink($path);
+        }
+    }
+
+    public function fileAndFileRangeAreHandedToTheHost(): void
+    {
+        $path = self::file('0123456789');
+        $respond = static fn(): Response => new BinaryFileResponse($path, headers: ['Content-Type' => 'text/plain']);
+        $whole = FakeExchange::for('/file');
+        $range = FakeExchange::for('/file', headers: ['range' => ['bytes=2-5']]);
+
+        try {
+            $this->serve($respond, $whole, $range);
         } finally {
             @\unlink($path);
         }
 
+        $realPath = (string) \realpath(\dirname($path)) . \DIRECTORY_SEPARATOR . \basename($path);
+        Assert::same($whole->status, 200);
+        Assert::same($whole->headers['Content-Length'], ['10']);
+        Assert::same($whole->sentFiles, [['path' => $realPath, 'offset' => 0, 'length' => null]]);
+        Assert::same($whole->chunks, []);
+        Assert::true($whole->isFinalized());
         Assert::same($range->status, 206);
-        Assert::same($range->headers['Content-Range'], ['bytes 2-5/10']);
-        Assert::same(self::deliveredBody($range), '2345');
+        Assert::same($range->sentFiles, [['path' => $realPath, 'offset' => 2, 'length' => 4]]);
         Assert::true($range->isFinalized());
-        Assert::same($unsatisfiable->status, 416);
-        Assert::null($unsatisfiable->header('content-length'));
-        Assert::same(self::deliveredBody($unsatisfiable), '');
-        Assert::true($unsatisfiable->isFinalized());
+    }
+
+    public function fileTheHostRefusesIsStreamedUnderTheSameHead(): void
+    {
+        $path = self::file('0123456789');
+        $exchange = FakeExchange::for('/file', headers: ['range' => ['bytes=2-5']]);
+        $exchange->refuseFiles = true;
+
+        try {
+            $this->serve(static fn(): Response => new BinaryFileResponse($path, headers: ['Content-Type' => 'text/plain']), $exchange);
+        } finally {
+            @\unlink($path);
+        }
+
+        Assert::same($exchange->status, 206);
+        Assert::same($exchange->headers['Content-Length'], ['4']);
+        Assert::same($exchange->sentFiles, []);
+        Assert::same($exchange->getBody(), '2345');
+        Assert::true($exchange->isFinalized());
+    }
+
+    public function fileDeletedAfterSendIsStreamedAndThenDeleted(): void
+    {
+        $path = self::file('0123456789');
+        $exchange = FakeExchange::for('/file');
+
+        $this->serve(static fn(): Response => (new BinaryFileResponse(
+            $path,
+            headers: ['Content-Type' => 'text/plain'],
+        ))->deleteFileAfterSend(), $exchange);
+
+        Assert::same($exchange->sentFiles, []);
+        Assert::same($exchange->getBody(), '0123456789');
+        Assert::true($exchange->isFinalized());
+        Assert::false(\is_file($path));
+    }
+
+    public function streamedOutputIsForwardedInChunksAndOnEveryObFlush(): void
+    {
+        $exchange = FakeExchange::for('/');
+
+        $this->serve(static fn(): Response => new StreamedResponse(static function (): void {
+            for ($i = 0; $i < 100; ++$i) {
+                echo 'a';
+            }
+            \ob_flush();
+            echo \str_repeat('b', 10_000);
+            echo 'c';
+        }), $exchange);
+
+        $chunks = \array_values(\array_filter($exchange->chunks, static fn(string $chunk): bool => $chunk !== ''));
+        Assert::same($chunks[0], \str_repeat('a', 100));
+        Assert::same(\implode('', \array_slice($chunks, 1)), \str_repeat('b', 10_000) . 'c');
+        Assert::true(\count($chunks) > 2);
+        Assert::true($exchange->isFinalized());
+    }
+
+    public function cleanedOutputIsNotForwarded(): void
+    {
+        $exchange = FakeExchange::for('/');
+
+        $this->serve(static fn(): Response => new StreamedResponse(static function (): void {
+            echo 'discarded';
+            \ob_clean();
+            echo 'kept';
+        }), $exchange);
+
+        Assert::same($exchange->getBody(), 'kept');
+    }
+
+    public function headerWithoutAValueIsSentEmpty(): void
+    {
+        $exchange = FakeExchange::for('/');
+        $response = new Response('body');
+        $response->headers->set('X-Empty', null);
+
+        $this->serve(static fn(): Response => $response, $exchange);
+
+        Assert::same($exchange->headers['X-Empty'], ['']);
     }
 
     /**

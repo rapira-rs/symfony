@@ -16,14 +16,12 @@ use Symfony\Component\Runtime\RunnerInterface;
 final readonly class DispatcherRunner implements RunnerInterface
 {
     private DispatcherRequestFactory $requestFactory;
-    private ExchangeResponseEmitter $responseEmitter;
 
     public function __construct(
         private HttpKernelInterface $kernel,
         private HttpDispatcher $dispatcher,
     ) {
         $this->requestFactory = new DispatcherRequestFactory();
-        $this->responseEmitter = new ExchangeResponseEmitter();
     }
 
     #[\Override]
@@ -50,7 +48,7 @@ final readonly class DispatcherRunner implements RunnerInterface
                 $response = $this->kernel->handle($request);
 
                 try {
-                    $this->responseEmitter->emit($exchange, $request, $response);
+                    (new ExchangeResponseEmitter($exchange))->emit($request, $response);
                 } catch (ResponseDiscardedException) {
                 }
 
