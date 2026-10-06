@@ -26,17 +26,16 @@ final readonly class ExchangeResponseEmitter
             throw new \LogicException('Symfony EventStreamResponse is not supported in Rapira Dispatcher mode.');
         }
 
-        $rawMethod = $request->attributes->getString('rapira.request_method');
-        if ($rawMethod === '') {
-            $rawMethod = $request->server->getString('RAPIRA_REQUEST_METHOD', $request->server->getString('REQUEST_METHOD'));
-        }
+        // The method on the wire decides whether the host sends a body. Symfony's getMethod() uppercases it
+        // and honours method overrides, so it may say HEAD where the wire does not.
+        $rawMethod = $exchange->getRequest()->method;
         $prepareRequest = $request;
         if ($rawMethod === 'HEAD') {
             $prepareRequest = clone $request;
             $prepareRequest->setMethod('GET');
         } elseif ($request->isMethod('HEAD')) {
             $prepareRequest = clone $request;
-            $prepareRequest->setMethod('RAPIRA_NONSTANDARD_HEAD');
+            $prepareRequest->setMethod('GET');
         }
 
         $response->prepare($prepareRequest);
