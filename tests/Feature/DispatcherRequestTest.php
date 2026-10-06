@@ -21,7 +21,6 @@ use Symfony\Component\HttpFoundation\File\UploadedFile;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Testo\Assert;
-use Testo\Skip;
 use Testo\Test;
 
 /**
@@ -75,8 +74,7 @@ final class DispatcherRequestTest
         [$request, $globals] = $this->serveWithGlobals($exchange);
 
         Assert::same($request->getMethod(), 'POST');
-        Assert::same($request->server->get('RAPIRA_REQUEST_METHOD'), 'POST');
-        Assert::same($request->attributes->get('rapira.request_method'), 'POST');
+        Assert::same($request->server->get('REQUEST_METHOD'), 'POST');
         Assert::same($request->server->get('REQUEST_URI'), '/path?q=one&q=two&raw=%2F');
         Assert::same($request->server->get('SERVER_PROTOCOL'), 'HTTP/2');
         Assert::same($request->server->get('REQUEST_TIME'), 1_700_000_000);
@@ -154,7 +152,6 @@ final class DispatcherRequestTest
         ]);
     }
 
-    #[Skip('known bug: a form content type in another letter case is not parsed')]
     public function urlEncodedFormIsParsedWhateverTheContentTypeCase(): void
     {
         $request = $this->serveOne(FakeExchange::for(
@@ -167,7 +164,7 @@ final class DispatcherRequestTest
         Assert::same($request->request->all(), ['user' => ['name' => 'Ada']]);
     }
 
-    public function multipartFieldsAndFilesKeepTheirNestingAndUploadCopiesAreRemovedAfterwards(): void
+    public function multipartFieldsAndFilesKeepTheirNestingAndUploadsAreRemovedAfterwards(): void
     {
         $source = self::file('upload-body');
         $seen = [];
@@ -198,8 +195,7 @@ final class DispatcherRequestTest
         Assert::same($seen['content'], 'upload-body');
         Assert::same($seen['empty'], \UPLOAD_ERR_NO_FILE);
         Assert::false(\is_file($seen['path']));
-        Assert::true(\is_file($source));
-        @\unlink($source);
+        Assert::false(\is_file($source));
     }
 
     /**
@@ -220,7 +216,7 @@ final class DispatcherRequestTest
         try {
             $this->serve($kernel, $exchange);
         } catch (\RuntimeException $exception) {
-            Assert::same($exception->getMessage(), \sprintf('Unable to read Rapira upload "%s".', $missing));
+            Assert::same($exception->getMessage(), \sprintf('Unable to keep Rapira upload "%s".', $missing));
         } finally {
             @\unlink($source);
         }
@@ -249,7 +245,63 @@ final class DispatcherRequestTest
         @\unlink($source);
     }
 
-    #[Skip('known bug: dispatcher cookies are not URL-decoded')]
+    /**
+     * The host deletes its spool file when the exchange finalizes, which happens before terminate().
+     */
+    public function uploadOutlivesTheHostSpoolFileUntilTerminate(): void
+    {
+        $source = self::file('late');
+        $read = null;
+        $kernel = new TestKernel(terminate: static function (Request $request) use ($source, &$read): void {
+            @\unlink($source);
+            $read = \file_get_contents($request->files->get('file')->getPathname());
+        });
+
+        $this->serve($kernel, FakeExchange::for('/upload', 'POST', body: new Multipart([], [
+            new RapiraUploadedFile('file', 'file.txt', 'text/plain', [], $source, 4),
+        ])));
+
+        Assert::same($read, 'late');
+    }
+
+    public function multipartFileNamesAreMangledLikeFieldNames(): void
+    {
+        $source = self::file('body');
+        $kernel = new TestKernel();
+
+        $this->serve($kernel, FakeExchange::for('/upload', 'POST', body: new Multipart(
+            [new FormField('field.name', 'value', []), new FormField('list one[]', 'item', [])],
+            [
+                new RapiraUploadedFile('file.name', 'a.txt', 'text/plain', [], $source, 4),
+                new RapiraUploadedFile('list two[]', '', null, [], $source, 0),
+            ],
+        )));
+
+        $request = $kernel->requests[0];
+        Assert::same($request->request->all(), ['field_name' => 'value', 'list_one' => ['item']]);
+        Assert::same(\array_keys($request->files->all()), ['file_name', 'list_two']);
+        Assert::true($request->files->all()['list_two'][0] instanceof UploadedFile);
+    }
+
+    public function urlEncodedBodyIsParsedOnlyForTheMethodsThatTakeAForm(): void
+    {
+        $form = ['content-type' => ['application/x-www-form-urlencoded']];
+        $kernel = new TestKernel();
+
+        $this->serve(
+            $kernel,
+            FakeExchange::for('/', 'PATCH', $form, 'a=1'),
+            FakeExchange::for('/', 'GET', $form, 'a=2'),
+            FakeExchange::for('/', 'patch', $form, 'a=3'),
+        );
+
+        [$patch, $get, $lowercase] = $kernel->requests;
+        Assert::same($patch->request->all(), ['a' => '1']);
+        Assert::same($get->request->all(), []);
+        Assert::same($get->getContent(), 'a=2');
+        Assert::same($lowercase->request->all(), []);
+    }
+
     public function cookieValuesAreUrlDecoded(): void
     {
         $request = $this->serveOne(FakeExchange::for('/', headers: ['cookie' => ['sid=a%3Ab%3D; plain=a%20b']]));
@@ -257,7 +309,6 @@ final class DispatcherRequestTest
         Assert::same($request->cookies->all(), ['sid' => 'a:b=', 'plain' => 'a b']);
     }
 
-    #[Skip('known bug: with duplicate dispatcher cookie names the last one wins instead of the first')]
     public function firstOfDuplicateCookieNamesWins(): void
     {
         $request = $this->serveOne(FakeExchange::for('/', headers: ['cookie' => ['a=1; a=2', 'a=3']]));
@@ -265,7 +316,6 @@ final class DispatcherRequestTest
         Assert::same($request->cookies->get('a'), '1');
     }
 
-    #[Skip('known bug: several Cookie headers are joined with ", " instead of "; "')]
     public function severalCookieHeadersAreJoinedAsOneCookieList(): void
     {
         $request = $this->serveOne(FakeExchange::for('/', headers: ['cookie' => ['a=1', 'b=2']]));
@@ -275,7 +325,6 @@ final class DispatcherRequestTest
         Assert::same($request->server->get('HTTP_COOKIE'), 'a=1; b=2');
     }
 
-    #[Skip('known bug: dispatcher cookies are not URL-decoded, so a cookie Symfony set does not round-trip')]
     public function cookieSetBySymfonyRoundTrips(): void
     {
         $value = 'a:b= c;d/é';

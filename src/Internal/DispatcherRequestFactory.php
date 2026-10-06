@@ -4,351 +4,272 @@ declare(strict_types=1);
 
 namespace Rapira\Symfony\Internal;
 
-use Nyholm\Psr7\Factory\Psr17Factory;
-use Psr\Http\Message\ServerRequestInterface;
 use Rapira\Http\Multipart;
 use Rapira\Http\Request as RapiraRequest;
+use Rapira\Http\UploadedFile as RapiraUploadedFile;
 use Rapira\InetAddress;
-use Symfony\Bridge\PsrHttpMessage\Factory\HttpFoundationFactory;
 use Symfony\Component\HttpFoundation\File\UploadedFile;
+use Symfony\Component\HttpFoundation\Request;
 
 /**
+ * Builds the Symfony request for an exchange the host hands out in Dispatcher mode.
+ *
+ * The request is filled the way PHP fills the superglobals in the other modes, so the application sees
+ * the same request whatever mode serves it: `$_SERVER`-style meta-variables, query and cookie values
+ * decoded and nested by PHP's own rules, form bodies parsed. The superglobals themselves stay untouched.
+ *
  * @internal
  */
 final readonly class DispatcherRequestFactory
 {
-    /** @var array<string, mixed> */
-    private array $server;
+    /** Methods whose url-encoded body PHP or Symfony parse into the request parameters. */
+    private const FORM_METHODS = ['POST', 'PUT', 'PATCH', 'DELETE'];
 
-    private Psr17Factory $psr17Factory;
-    private HttpFoundationFactory $httpFoundationFactory;
+    /** @var array<string, mixed> */
+    private array $boot;
 
     public function __construct()
     {
-        $this->server = BootServer::variables($_SERVER);
-        $this->psr17Factory = new Psr17Factory();
-        $this->httpFoundationFactory = new HttpFoundationFactory();
-    }
-
-    public function create(RapiraRequest $source): DispatcherRequest
-    {
-        $psrRequest = $this->createPsrRequest($this->normalizeRequest($source));
-        $psrRequest = $psrRequest->withCookieParams($this->parseCookies($source->headers));
-        $uploadPaths = [];
-
-        try {
-            if ($source->body instanceof Multipart) {
-                [$files, $uploadPaths] = $this->createHttpFoundationFiles($source->body);
-                $psrRequest = $psrRequest->withUploadedFiles([]);
-            } else {
-                $files = [];
-            }
-
-            $request = $this->httpFoundationFactory->createRequest($psrRequest);
-            /** @psalm-suppress MixedArgumentTypeCoercion */
-            $request->files->replace($files);
-        } catch (\Throwable $exception) {
-            $this->cleanupUploadPaths($uploadPaths);
-
-            throw $exception;
-        }
-        $request->server->replace($request->server->all() + $this->server);
-        $request->server->set('REQUEST_URI', $source->target);
-        $request->server->set('RAPIRA_REQUEST_METHOD', $source->method);
-        if ($source->server instanceof InetAddress) {
-            $request->server->set('SERVER_ADDR', $source->server->ip);
-            $request->server->set('SERVER_PORT', $source->server->port);
-        } else {
-            $request->server->remove('SERVER_ADDR');
-            $request->server->remove('SERVER_PORT');
-        }
-        $request->attributes->set('rapira.request_method', $source->method);
-
-        return new DispatcherRequest($request, $uploadPaths);
-    }
-
-    private function createPsrRequest(RapiraRequest $source): ServerRequestInterface
-    {
-        $request = $this->psr17Factory->createServerRequest(
-            $source->method,
-            $source->uri,
-            $this->serverParams($source),
-        );
-        $request = $request->withProtocolVersion(\str_replace('HTTP/', '', $source->protocol));
-
-        foreach ($source->headers as $name => $values) {
-            $request = $request->withHeader($name, $values);
-        }
-
-        $query = [];
-        \parse_str($request->getUri()->getQuery(), $query);
-        $request = $request->withQueryParams($query);
-
-        if ($source->body instanceof Multipart) {
-            return $request
-                ->withBody($this->psr17Factory->createStream())
-                ->withParsedBody($this->parseFields($source->body));
-        }
-
-        $request = $request->withBody($this->psr17Factory->createStream($source->body));
-        if (\preg_match('~^application/x-www-form-urlencoded(?:$| |;)~', $request->getHeaderLine('content-type')) === 1) {
-            $parsed = [];
-            \parse_str($source->body, $parsed);
-            $request = $request->withParsedBody($parsed);
-        }
-
-        return $request;
+        $this->boot = BootServer::variables($_SERVER);
     }
 
     /**
-     * @psalm-suppress MissingPureAnnotation
+     * @throws \RuntimeException An upload could not be taken over from the host.
+     */
+    public function create(RapiraRequest $source): DispatcherRequest
+    {
+        $headers = self::mergeHeaders($source->headers);
+        $query = \explode('?', $source->target, 2)[1] ?? '';
+        $uploads = [];
+
+        try {
+            if ($source->body instanceof Multipart) {
+                $post = self::parseFields($source->body);
+                $files = self::createFiles($source->body, $uploads);
+                $content = '';
+            } else {
+                $post = self::parseForm($source->method, $source->body, $headers);
+                $files = [];
+                $content = $source->body;
+            }
+
+            $request = new Request(
+                query: self::parseQuery($query),
+                request: $post,
+                cookies: self::parseCookies(\implode('; ', $headers['cookie'][1] ?? [])),
+                files: $files,
+                server: $this->createServerParams($source, $headers, $query),
+                content: $content,
+            );
+        } catch (\Throwable $exception) {
+            DispatcherRequest::removeFiles($uploads);
+
+            throw $exception;
+        }
+
+        // The server bag yields one comma-joined value per header; the exchange keeps every value apart.
+        foreach ($headers as $lower => [$name, $values]) {
+            $request->headers->set($name, $lower === 'cookie' ? \implode('; ', $values) : $values);
+        }
+
+        return new DispatcherRequest($request, $uploads);
+    }
+
+    /**
+     * @param array<non-empty-string, list<string>> $headers
+     *
+     * @return array<lowercase-string, array{non-empty-string, list<string>}> The values of every spelling
+     *         of a name, under the spelling that came first.
+     *
+     * @psalm-pure
+     */
+    private static function mergeHeaders(array $headers): array
+    {
+        $merged = [];
+        foreach ($headers as $name => $values) {
+            $lower = \strtolower($name);
+            if (isset($merged[$lower])) {
+                $merged[$lower][1] = [...$merged[$lower][1], ...$values];
+            } else {
+                $merged[$lower] = [$name, $values];
+            }
+        }
+
+        return $merged;
+    }
+
+    /**
+     * @param array<lowercase-string, array{non-empty-string, list<string>}> $headers
+     *
+     * @return array<array-key, mixed>
+     */
+    private static function parseForm(string $method, string $body, array $headers): array
+    {
+        if (!\in_array($method, self::FORM_METHODS, true)) {
+            return [];
+        }
+
+        $contentType = \strtolower(\implode(', ', $headers['content-type'][1] ?? []));
+        if (\preg_match('~^application/x-www-form-urlencoded(?:$|[ ;])~', $contentType) !== 1) {
+            return [];
+        }
+
+        return self::parseQuery($body);
+    }
+
+    /**
+     * @return array<array-key, mixed>
+     */
+    private static function parseFields(Multipart $multipart): array
+    {
+        // Re-encoded as a query string so PHP's own parser builds the `name[key][]` structure and mangles
+        // the names exactly as it does for `$_POST`.
+        $pairs = [];
+        foreach ($multipart->fields as $field) {
+            $pairs[] = \rawurlencode($field->name) . '=' . \rawurlencode($field->value);
+        }
+
+        return self::parseQuery(\implode('&', $pairs));
+    }
+
+    /**
+     * @param list<string> $uploads Receives the path of every file taken over, also when this throws.
+     *
+     * @return array<array-key, mixed>
+     */
+    private static function createFiles(Multipart $multipart, array &$uploads): array
+    {
+        // The trick of the fields, so file names nest and mangle the same way: PHP nests the indexes, and
+        // each index is then swapped for its file.
+        $pairs = [];
+        $files = [];
+        foreach ($multipart->files as $index => $file) {
+            $pairs[] = \rawurlencode($file->name) . '=' . $index;
+            $files[$index] = self::createFile($file, $uploads);
+        }
+
+        $tree = self::parseQuery(\implode('&', $pairs));
+        \array_walk_recursive($tree, static function (mixed &$value) use ($files): void {
+            $value = $files[(int) $value];
+        });
+
+        return $tree;
+    }
+
+    /**
+     * @param list<string> $uploads
+     */
+    private static function createFile(RapiraUploadedFile $file, array &$uploads): UploadedFile
+    {
+        if ($file->clientFilename === '') {
+            return new UploadedFile('', '', null, \UPLOAD_ERR_NO_FILE, true);
+        }
+
+        // The host deletes its spool file once the exchange finalizes, which is before terminate(); a file
+        // renamed away survives that, and the bridge removes it after terminate() instead.
+        $path = @\tempnam(\dirname($file->tmpPath), 'rapira-upload-');
+        if ($path === false) {
+            throw new \RuntimeException(\sprintf('Unable to create a file to keep Rapira upload "%s".', $file->tmpPath));
+        }
+        $uploads[] = $path;
+
+        if (!@\rename($file->tmpPath, $path)) {
+            throw new \RuntimeException(\sprintf('Unable to keep Rapira upload "%s".', $file->tmpPath));
+        }
+
+        return new UploadedFile($path, $file->clientFilename, $file->clientMediaType, \UPLOAD_ERR_OK, true);
+    }
+
+    /**
+     * Parses a `Cookie` header the way PHP fills `$_COOKIE`: names and values URL-decoded, names mangled
+     * and nested by bracket syntax, and the first of two equal names wins.
+     *
+     * @return array<array-key, mixed>
+     */
+    private static function parseCookies(string $header): array
+    {
+        $pairs = [];
+        foreach (\explode(';', $header) as $pair) {
+            $parts = \explode('=', \trim($pair), 2);
+            if (\count($parts) !== 2 || $parts[0] === '' || isset($pairs[$parts[0]])) {
+                continue;
+            }
+            // `&` is a legal cookie octet but a separator for `parse_str()`.
+            $pairs[$parts[0]] = \str_replace('&', '%26', $parts[0]) . '=' . \str_replace('&', '%26', $parts[1]);
+        }
+
+        return self::parseQuery(\implode('&', $pairs));
+    }
+
+    /**
+     * @return array<array-key, mixed>
+     */
+    private static function parseQuery(string $query): array
+    {
+        if ($query === '') {
+            return [];
+        }
+
+        \parse_str($query, $result);
+
+        return $result;
+    }
+
+    /**
+     * @param array<lowercase-string, array{non-empty-string, list<string>}> $headers
      *
      * @return array<string, mixed>
+     *
+     * @psalm-mutation-free
      */
-    private function serverParams(RapiraRequest $request): array
+    private function createServerParams(RapiraRequest $request, array $headers, string $query): array
     {
         $params = [
+            'SERVER_PROTOCOL' => $request->protocol,
             'REQUEST_METHOD' => $request->method,
             'REQUEST_URI' => $request->target,
-            'SERVER_PROTOCOL' => $request->protocol,
+            'QUERY_STRING' => $query,
             'REQUEST_TIME' => (int) $request->receivedAt,
             'REQUEST_TIME_FLOAT' => $request->receivedAt,
         ];
 
-        if ($request->authority !== null) {
-            $params['HTTP_HOST'] = $request->authority;
-        }
-        if ($request->tls !== null) {
+        if (\str_starts_with($request->uri, 'https:') || $request->tls !== null) {
             $params['HTTPS'] = 'on';
         }
+
         if ($request->remote instanceof InetAddress) {
             $params['REMOTE_ADDR'] = $request->remote->ip;
             $params['REMOTE_PORT'] = $request->remote->port;
         } elseif ($request->remote->path !== null) {
             $params['REMOTE_ADDR'] = $request->remote->path;
         }
+
         if ($request->server instanceof InetAddress) {
             $params['SERVER_ADDR'] = $request->server->ip;
             $params['SERVER_PORT'] = $request->server->port;
-        } elseif ($request->server->path !== null) {
-            $params['SERVER_ADDR'] = $request->server->path;
         }
 
-        foreach ($request->headers as $name => $values) {
-            $key = \strtoupper(\str_replace('-', '_', $name));
-            if ($key !== 'CONTENT_TYPE' && $key !== 'CONTENT_LENGTH') {
-                $key = 'HTTP_' . $key;
-            }
-            $params[$key] = \implode(', ', $values);
+        $host = \parse_url($request->uri, \PHP_URL_HOST);
+        if (\is_string($host) && $host !== '') {
+            $params['SERVER_NAME'] = \trim($host, '[]');
         }
 
-        return $params;
-    }
-
-    /**
-     * @return array<array-key, mixed>
-     */
-    private function parseFields(Multipart $multipart): array
-    {
-        $pairs = [];
-        foreach ($multipart->fields as $field) {
-            $pairs[] = \urlencode($field->name) . '=' . \urlencode($field->value);
-        }
-
-        $result = [];
-        \parse_str(\implode('&', $pairs), $result);
-
-        return $result;
-    }
-
-    /**
-     * @return array{array<array-key, mixed>, list<string>}
-     *
-     * @psalm-suppress MixedReturnTypeCoercion
-     */
-    private function createHttpFoundationFiles(Multipart $multipart): array
-    {
-        $files = [];
-        /** @var list<string> $paths */
-        $paths = [];
-
-        try {
-            foreach ($multipart->files as $file) {
-                if ($file->clientFilename === '') {
-                    $uploaded = new UploadedFile('', '', null, \UPLOAD_ERR_NO_FILE, true);
-                } else {
-                    $path = \tempnam(\sys_get_temp_dir(), 'rapira-upload-');
-                    if ($path === false) {
-                        throw new \RuntimeException('Unable to create a temporary upload file.');
-                    }
-                    $paths[] = $path;
-
-                    $source = @\fopen($file->tmpPath, 'rb');
-                    if ($source === false) {
-                        throw new \RuntimeException(\sprintf('Unable to read Rapira upload "%s".', $file->tmpPath));
-                    }
-                    $target = @\fopen($path, 'wb');
-                    if ($target === false) {
-                        \fclose($source);
-
-                        throw new \RuntimeException(\sprintf('Unable to write temporary upload "%s".', $path));
-                    }
-
-                    try {
-                        if (\stream_copy_to_stream($source, $target) === false) {
-                            throw new \RuntimeException(\sprintf('Unable to copy Rapira upload "%s".', $file->tmpPath));
-                        }
-                    } finally {
-                        \fclose($source);
-                        \fclose($target);
-                    }
-
-                    $uploaded = new UploadedFile(
-                        $path,
-                        $file->clientFilename,
-                        $file->clientMediaType,
-                        \UPLOAD_ERR_OK,
-                        true,
-                    );
-                }
-
-                $this->addNested($files, $file->name, $uploaded);
-            }
-        } catch (\Throwable $exception) {
-            $this->cleanupUploadPaths($paths);
-
-            throw $exception;
-        }
-
-        return [$files, $paths];
-    }
-
-    /**
-     * @param list<string> $paths
-     */
-    private function cleanupUploadPaths(array $paths): void
-    {
-        foreach ($paths as $path) {
-            if (\is_file($path)) {
-                @\unlink($path);
-            }
-        }
-    }
-
-    /**
-     * @psalm-suppress MissingPureAnnotation, MixedAssignment
-     *
-     * @param array<array-key, mixed> $target
-     */
-    private function addNested(array &$target, string $name, mixed $value): void
-    {
-        if (\preg_match('/^([^\[]+)((?:\[[^\]]*])*)$/', $name, $matches) !== 1) {
-            $target[$name] = $value;
-
-            return;
-        }
-
-        $keys = [$matches[1]];
-        if ($matches[2] !== '') {
-            \preg_match_all('/\[([^\]]*)]/', $matches[2], $bracketed);
-            foreach ($bracketed[1] as $key) {
-                $keys[] = $key;
+        // Named as the Rapira SAPI names them in Worker mode: `-` and `.` become `_`, and of two fields that
+        // map to one name the later wins.
+        foreach ($headers as $lower => [, $values]) {
+            $key = \strtoupper(\str_replace(['-', '.'], '_', $lower));
+            $value = \implode($lower === 'cookie' ? '; ' : ', ', $values);
+            if ($key === 'CONTENT_TYPE' || $key === 'CONTENT_LENGTH') {
+                $params[$key] = $value;
+            } else {
+                $params['HTTP_' . $key] = $value;
             }
         }
 
-        $this->insert($target, $keys, $value);
-    }
-
-    /**
-     * @param array<array-key, mixed> $target
-     * @param list<string> $keys
-     *
-     * @psalm-suppress MissingPureAnnotation, MixedAssignment, MixedArrayAssignment, MixedArgument
-     */
-    private function insert(array &$target, array $keys, mixed $value): void
-    {
-        $key = \array_shift($keys);
-        if ($key === null) {
-            return;
-        }
-        if ($key === '') {
-            $target[] = $keys === [] ? $value : [];
-            if ($keys !== []) {
-                /** @var array-key $last */
-                $last = \array_key_last($target);
-                $this->insert($target[$last], $keys, $value);
-            }
-
-            return;
-        }
-        if ($keys === []) {
-            $target[$key] = $value;
-
-            return;
-        }
-        if (!isset($target[$key]) || !\is_array($target[$key])) {
-            $target[$key] = [];
-        }
-        $this->insert($target[$key], $keys, $value);
-    }
-
-    private function normalizeRequest(RapiraRequest $request): RapiraRequest
-    {
-        /** @var array<non-empty-string, list<string>> $headers */
-        $headers = [];
-        /** @var array<string, non-empty-string> $names */
-        $names = [];
-        foreach ($request->headers as $name => $values) {
-            $lower = \strtolower($name);
-            if (isset($names[$lower])) {
-                $headers[$names[$lower]] = [...$headers[$names[$lower]], ...$values];
-                continue;
-            }
-
-            $names[$lower] = $name;
-            $headers[$name] = $values;
+        if ($request->authority !== null) {
+            $params['HTTP_HOST'] = $request->authority;
         }
 
-        return new RapiraRequest(
-            $request->method,
-            $request->uri,
-            $request->target,
-            $request->authority,
-            $request->protocol,
-            $headers,
-            $request->body,
-            $request->remote,
-            $request->server,
-            $request->tls,
-            $request->receivedAt,
-        );
-    }
-
-    /**
-     * @psalm-pure
-     *
-     * @param array<non-empty-string, list<string>> $headers
-     *
-     * @return array<string, string>
-     */
-    private function parseCookies(array $headers): array
-    {
-        $cookies = [];
-        foreach ($headers as $name => $values) {
-            if (\strcasecmp($name, 'cookie') !== 0) {
-                continue;
-            }
-
-            foreach ($values as $value) {
-                foreach (\explode(';', $value) as $pair) {
-                    $parts = \explode('=', $pair, 2);
-                    if (\count($parts) === 2) {
-                        $cookies[\trim($parts[0])] = \trim($parts[1]);
-                    }
-                }
-            }
-        }
-
-        return $cookies;
+        return $params + $this->boot;
     }
 }
