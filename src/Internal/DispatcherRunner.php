@@ -2,13 +2,10 @@
 
 declare(strict_types=1);
 
-namespace Rapira\Symfony;
+namespace Rapira\Symfony\Internal;
 
 use Rapira\Exception\ClosedException;
 use Rapira\Http\HttpDispatcher;
-use Rapira\Symfony\Internal\DispatcherRequestFactory;
-use Rapira\Symfony\Internal\ExchangeResponseEmitter;
-use Rapira\Symfony\Internal\ResponseDiscardedException;
 use Symfony\Component\HttpKernel\HttpKernelInterface;
 use Symfony\Component\HttpKernel\TerminableInterface;
 use Symfony\Component\Runtime\RunnerInterface;
@@ -18,15 +15,16 @@ use Symfony\Component\Runtime\RunnerInterface;
  */
 final readonly class DispatcherRunner implements RunnerInterface
 {
-    /**
-     * @psalm-mutation-free
-     */
+    private DispatcherRequestFactory $requestFactory;
+    private ExchangeResponseEmitter $responseEmitter;
+
     public function __construct(
         private HttpKernelInterface $kernel,
         private HttpDispatcher $dispatcher,
-        private DispatcherRequestFactory $requestFactory,
-        private ExchangeResponseEmitter $responseEmitter,
-    ) {}
+    ) {
+        $this->requestFactory = new DispatcherRequestFactory();
+        $this->responseEmitter = new ExchangeResponseEmitter();
+    }
 
     #[\Override]
     public function run(): int

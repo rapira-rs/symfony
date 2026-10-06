@@ -46,14 +46,12 @@ final readonly class DispatcherRequestFactory
     private Psr17Factory $psr17Factory;
     private HttpFoundationFactory $httpFoundationFactory;
 
-    /**
-     * @param array<string, mixed>|null $server
-     */
-    public function __construct(?array $server = null)
+    public function __construct()
     {
-        $sourceServer = $server ?? $_SERVER;
+        /** @var array<string, mixed> $server */
+        $server = $_SERVER;
         $this->server = \array_filter(
-            $sourceServer,
+            $server,
             static function (mixed $key): bool {
                 if (\in_array($key, self::NON_HTTP_BOOT_SERVER_KEYS, true)) {
                     return true;
