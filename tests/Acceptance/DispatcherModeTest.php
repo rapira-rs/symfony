@@ -20,6 +20,11 @@ final class DispatcherModeTest
 
     private const ADDRESS = '127.0.0.1:8083';
 
+    public function flushingStreamArrivesWholeAndTheApplicationGoesOn(): void
+    {
+        $this->assertFlushingStreamArrivesWhole(sameWorker: true);
+    }
+
     protected function mode(): Mode
     {
         return Mode::Dispatcher;
