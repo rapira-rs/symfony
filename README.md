@@ -63,11 +63,15 @@ Worker and Dispatcher serve only an `HttpKernelInterface` application and refuse
 
 In Classic and Worker modes the response is sent inside an output buffer of its own, flushed every 8 KiB and on every `ob_flush()`, as under php-fpm with `output_buffering`. The host builds a Worker request's `$_SERVER` from the request alone, so the Runtime adds the boot-time variables back, `APP_ENV`, `APP_SECRET` and the rest of the environment, but never boot-time request metadata such as `HTTP_*`, `REMOTE_*` or `HTTPS`.
 
+## Dispatcher is sequential for Symfony
+
+Dispatcher mode is built for code that serves exchanges concurrently, which rules out per-request superglobals, mutable static state and `header()`. Symfony still serves them one at a time here: a `StreamedResponse` prints its body, so it can only be captured through PHP's process-wide output buffers, and the framework keeps request-related state in statics such as the trusted proxies of `Request` and in services shared by the whole process. An application, or a library, that needs the superglobals or `header()` belongs in Worker mode.
+
 ## Dispatcher requests
 
-The superglobals are neither read nor filled. The Symfony `Request` holds what PHP would have put there: the exact request target in `REQUEST_URI`, the method byte for byte in `REQUEST_METHOD`, every header value, query and cookie values decoded and nested by PHP's rules with the first of two equal cookie names winning, url-encoded bodies parsed for `POST`, `PUT`, `PATCH` and `DELETE`, multipart fields and files with PHP's name mangling, TLS state and both network addresses. The boot-time variables are added as in Worker mode.
+The superglobals are neither read nor filled. The Symfony `Request` holds what the Rapira SAPI and PHP would have put there in Worker mode: the request target as sent in `REQUEST_URI` and `QUERY_STRING`, the method byte for byte in `REQUEST_METHOD`, every header value, query and cookie values decoded and nested by PHP's rules, form and multipart bodies parsed by their `Content-Type` for any method, with PHP's name mangling, TLS state and both network addresses. A header named outside `[A-Za-z0-9-]` is dropped, as the host drops it in Worker mode, so `X_Forwarded_For` cannot pose as `X-Forwarded-For`. The boot-time environment is added as in Worker mode, but not the script location: Rapira serves from the root, so the base URL is empty and the whole path is the path info.
 
-Code that reads `$_GET`, `$_POST`, `$_COOKIE`, `$_FILES`, `$_SERVER` or `php://input`, or answers through `header()` and `echo` outside a response body, does not see the request. Symfony sessions work, `NativeSessionStorage` included: the session listener takes the session id from the request's cookies and sets the session cookie on the response. Calling `session_start()` directly does not, since PHP looks for the id in `$_COOKIE` and sends its cookie through `header()`.
+Code that reads `$_GET`, `$_POST`, `$_COOKIE`, `$_FILES`, `$_SERVER` or `php://input`, or answers through `header()`, does not see the request. Symfony sessions work, `NativeSessionStorage` included: the session listener takes the session id from the request's cookies and sets the session cookie on the response. Calling `session_start()` directly does not, since PHP looks for the id in `$_COOKIE` and sends its cookie through `header()`.
 
 Uploaded files are renamed out of Rapira's spool, which the host empties once the response is sent, so they stay readable through `kernel->terminate()`; the Runtime removes them afterwards. A file the application moved stays where it was moved.
 
@@ -75,7 +79,8 @@ Uploaded files are renamed out of Rapira's spool, which the host empties once th
 
 Responses are prepared by HttpFoundation, with every repeated header and `Set-Cookie` value kept.
 
-- A buffered body goes out with the head in one write.
+- Output the application prints while handling the request goes out ahead of the body, except ahead of a file.
+- A buffered body goes out with the head in one write, or in 8 MiB writes under its length when longer.
 - A `BinaryFileResponse` is handed to Rapira with `Exchange::sendFile()`, ranges included, so PHP never holds the bytes. A temporary file, a file deleted after sending and a file Rapira refuses are streamed by PHP instead.
 - A `StreamedResponse`, or anything else that prints its body, is captured and forwarded every 8 KiB and on every `ob_flush()`. A bare `flush()` reaches no output handler, so call `ob_flush()` before it where latency matters. The head goes out with the first chunk.
 - `HEAD`, `204` and `304` send no body. A `HEAD` request for a file does not read it, and `deleteFileAfterSend()` still applies.
