@@ -20,8 +20,7 @@
     "require": {
         "php": ">=8.4",
         "nyholm/psr7": "^1.8",
-        "rapira/contract": "0.9.0 as dev-master",
-        "rapira/http": "^0.1",
+        "rapira/contract": "^0.9",
         "symfony/http-foundation": "^7.4 || ^8.0",
         "symfony/http-kernel": "^7.4 || ^8.0",
         "symfony/psr-http-message-bridge": "^7.4 || ^8.0",
