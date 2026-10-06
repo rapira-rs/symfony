@@ -6,6 +6,7 @@ namespace Rapira\Symfony\Internal;
 
 use Rapira\Exception\WorkDiscardedException;
 use Rapira\Http\Exception\FileNotSendableException;
+use Rapira\Http\Exception\HeadAlreadyWrittenError;
 use Rapira\Http\Exchange;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use Symfony\Component\HttpFoundation\EventStreamResponse;
@@ -41,11 +42,40 @@ final class ExchangeResponseEmitter
 
     /**
      * @throws ResponseDiscardedException The host closed the exchange: the client left or the deadline passed.
+     * @throws UnsentResponseException The response failed before its head was written.
      * @throws OutputBufferException The body left the output buffer stack in a state that cannot be restored.
      */
     public function emit(Request $request, Response $response): void
     {
-        $this->send($request, $response);
+        try {
+            $this->send($request, $response);
+        } catch (ResponseDiscardedException|OutputBufferException $exception) {
+            throw $exception;
+        } catch (\Throwable $exception) {
+            $this->headWritten or throw new UnsentResponseException($exception);
+
+            throw $exception;
+        }
+    }
+
+    /**
+     * Answers with a plain-text error, unless a head is already written: the host then fails the
+     * exchange once it is released unfinalized.
+     *
+     * @param int<400, 599> $status
+     */
+    public function emitError(int $status): void
+    {
+        if ($this->headWritten || $this->exchange->isFinalized()) {
+            return;
+        }
+
+        $this->headWritten = true;
+        try {
+            $this->exchange->writeHead($status, ['Content-Type' => ['text/plain; charset=UTF-8']]);
+            $this->exchange->writeBody(Response::$statusTexts[$status] ?? 'Error');
+        } catch (WorkDiscardedException|HeadAlreadyWrittenError) {
+        }
     }
 
     /**
