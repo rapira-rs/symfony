@@ -80,12 +80,18 @@ final class DispatcherRequestTest
         Assert::same($request->server->get('REQUEST_TIME'), 1_700_000_000);
         Assert::same($request->server->get('REQUEST_TIME_FLOAT'), 1_700_000_000.5);
         Assert::same($request->server->get('HTTPS'), 'on');
+        Assert::same($request->server->get('REQUEST_SCHEME'), 'https');
+        Assert::same($request->server->get('SERVER_NAME'), 'example.test');
+        Assert::same($request->server->get('QUERY_STRING'), 'q=one&q=two&raw=%2F');
+        Assert::same($request->query->all(), ['q' => 'two', 'raw' => '/']);
         Assert::same($request->server->get('REMOTE_ADDR'), '127.0.0.1');
         Assert::same($request->server->get('REMOTE_PORT'), 40000);
         Assert::same($request->server->get('SERVER_ADDR'), '127.0.0.1');
         Assert::same($request->server->get('SERVER_PORT'), 8080);
         Assert::same($request->server->get('CONTENT_TYPE'), 'application/json');
         Assert::same($request->server->get('CONTENT_LENGTH'), '20');
+        Assert::same($request->server->get('HTTP_CONTENT_TYPE'), 'application/json');
+        Assert::same($request->server->get('HTTP_CONTENT_LENGTH'), '20');
         Assert::same($request->headers->all('x-repeat'), ['one', 'two']);
         Assert::same($request->cookies->all(), ['a' => '1', 'b' => '2']);
         Assert::same($request->getContent(), '{"binary":"\u0000"}');
@@ -129,7 +135,9 @@ final class DispatcherRequestTest
         Assert::same($internet->server->get('SERVER_PORT'), 8443);
         Assert::same($internet->server->get('SERVER_PROTOCOL'), 'HTTP/1.1');
         Assert::same($internet->server->get('APP_ENV'), 'test');
-        foreach (['AUTH_TYPE', 'CONTENT_LENGTH', 'CONTENT_TYPE', 'HTTPS', 'REMOTE_ADDR', 'REMOTE_PORT', 'REQUEST_SCHEME'] as $key) {
+        Assert::same($internet->server->get('REQUEST_SCHEME'), 'http');
+        Assert::same($internet->server->get('SERVER_NAME'), 'public.example');
+        foreach (['AUTH_TYPE', 'CONTENT_LENGTH', 'CONTENT_TYPE', 'HTTPS', 'REMOTE_ADDR', 'REMOTE_PORT'] as $key) {
             Assert::false($internet->server->has($key), $key);
         }
         foreach (['SERVER_ADDR', 'SERVER_PORT', 'REMOTE_ADDR', 'REMOTE_PORT', 'HTTPS', 'CONTENT_TYPE', 'CONTENT_LENGTH'] as $key) {
@@ -162,6 +170,114 @@ final class DispatcherRequestTest
         ));
 
         Assert::same($request->request->all(), ['user' => ['name' => 'Ada']]);
+    }
+
+    public function formMediaTypeIsCutAtTheFirstSemicolonCommaOrSpace(): void
+    {
+        $kernel = new TestKernel();
+        $form = static fn(string $type, string $body): FakeExchange => FakeExchange::for('/', 'POST', ['content-type' => [$type]], $body);
+
+        $this->serve(
+            $kernel,
+            $form('application/x-www-form-urlencoded;charset=UTF-8', 'a=1'),
+            $form('application/x-www-form-urlencoded,text/plain', 'a=2'),
+            $form('application/x-www-form-urlencoded text', 'a=3'),
+            $form('application/x-www-form-urlencodedx', 'a=4'),
+        );
+
+        Assert::same(\array_map(static fn(Request $request): array => $request->request->all(), $kernel->requests), [
+            ['a' => '1'],
+            ['a' => '2'],
+            ['a' => '3'],
+            [],
+        ]);
+    }
+
+    public function multipartBodyIsParsedWhateverTheMethod(): void
+    {
+        $kernel = new TestKernel();
+        $sources = [];
+        $exchanges = [];
+        foreach (['GET', 'QUERY', 'post'] as $method) {
+            $sources[] = $source = self::file($method);
+            $exchanges[] = FakeExchange::for('/', $method, body: new Multipart(
+                [new FormField('field', $method, [])],
+                [new RapiraUploadedFile('file', 'a.txt', 'text/plain', [], $source, \strlen($method))],
+            ));
+        }
+
+        try {
+            $this->serve($kernel, ...$exchanges);
+        } finally {
+            foreach ($sources as $source) {
+                @\unlink($source);
+            }
+        }
+
+        foreach (['GET', 'QUERY', 'post'] as $i => $method) {
+            Assert::same($kernel->requests[$i]->request->all(), ['field' => $method]);
+            Assert::same(\array_keys($kernel->requests[$i]->files->all()), ['file']);
+        }
+    }
+
+    public function uploadWithABrokenBracketNameIsDroppedWhereAFieldIsRepaired(): void
+    {
+        $kernel = new TestKernel();
+        $sources = [];
+        $files = [];
+        foreach (['u[v', '[m]', 'a[b]c', 'a[[b]]', 'kept[x]'] as $name) {
+            $sources[] = $source = self::file($name);
+            $files[] = new RapiraUploadedFile($name, 'f.txt', 'text/plain', [], $source, \strlen($name));
+        }
+
+        try {
+            $this->serve($kernel, FakeExchange::for('/', 'POST', body: new Multipart([new FormField('u[v', 'text', [])], $files)));
+        } finally {
+            foreach ($sources as $source) {
+                @\unlink($source);
+            }
+        }
+
+        Assert::same($kernel->requests[0]->request->all(), ['u_v' => 'text']);
+        Assert::same(\array_keys($kernel->requests[0]->files->all()), ['kept']);
+        Assert::same(\array_keys($kernel->requests[0]->files->all()['kept']), ['x']);
+    }
+
+    public function headerNamedOutsideTheTokenSetCannotPoseAsAnotherHeader(): void
+    {
+        $request = $this->serveOne(FakeExchange::for('/', headers: [
+            'X_Forwarded_For' => ['203.0.113.1'],
+            'X.Forwarded.For' => ['203.0.113.2'],
+            'X-Real' => ['real'],
+        ]));
+
+        Assert::false($request->server->has('HTTP_X_FORWARDED_FOR'));
+        Assert::null($request->headers->get('x-forwarded-for'));
+        Assert::same($request->server->get('HTTP_X_REAL'), 'real');
+        Assert::same($request->headers->get('x-real'), 'real');
+    }
+
+    public function serverNameIsTheAuthorityHostWithoutPortOrBrackets(): void
+    {
+        $request = $this->serveOne(new FakeExchange(self::request(uri: 'https://[::1]:8443/', target: '/')));
+
+        Assert::same($request->server->get('SERVER_NAME'), '::1');
+        Assert::same($request->server->get('HTTPS'), 'on');
+        Assert::same($request->server->get('REQUEST_SCHEME'), 'https');
+    }
+
+    public function cookiesFollowPhpForPlusSignsBareNamesAndMangledDuplicates(): void
+    {
+        $request = $this->serveOne(FakeExchange::for('/', headers: [
+            'cookie' => ['plus=a+b; bare; a.b=first; a_b=second; list[]=1; list[]=2'],
+        ]));
+
+        Assert::same($request->cookies->all(), [
+            'plus' => 'a+b',
+            'bare' => '',
+            'a_b' => 'first',
+            'list' => ['1', '2'],
+        ]);
     }
 
     public function multipartFieldsAndFilesKeepTheirNestingAndUploadsAreRemovedAfterwards(): void
@@ -283,7 +399,7 @@ final class DispatcherRequestTest
         Assert::true($request->files->all()['list_two'][0] instanceof UploadedFile);
     }
 
-    public function urlEncodedBodyIsParsedOnlyForTheMethodsThatTakeAForm(): void
+    public function urlEncodedBodyIsParsedWhateverTheMethod(): void
     {
         $form = ['content-type' => ['application/x-www-form-urlencoded']];
         $kernel = new TestKernel();
@@ -292,14 +408,19 @@ final class DispatcherRequestTest
             $kernel,
             FakeExchange::for('/', 'PATCH', $form, 'a=1'),
             FakeExchange::for('/', 'GET', $form, 'a=2'),
-            FakeExchange::for('/', 'patch', $form, 'a=3'),
+            FakeExchange::for('/', 'QUERY', $form, 'a=3'),
+            FakeExchange::for('/', 'patch', $form, 'a=4'),
+            FakeExchange::for('/', 'GET', ['content-type' => ['text/plain']], 'a=5'),
         );
 
-        [$patch, $get, $lowercase] = $kernel->requests;
-        Assert::same($patch->request->all(), ['a' => '1']);
-        Assert::same($get->request->all(), []);
-        Assert::same($get->getContent(), 'a=2');
-        Assert::same($lowercase->request->all(), []);
+        Assert::same(\array_map(static fn(Request $request): array => $request->request->all(), $kernel->requests), [
+            ['a' => '1'],
+            ['a' => '2'],
+            ['a' => '3'],
+            ['a' => '4'],
+            [],
+        ]);
+        Assert::same($kernel->requests[1]->getContent(), 'a=2');
     }
 
     public function cookieValuesAreUrlDecoded(): void

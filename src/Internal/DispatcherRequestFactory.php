@@ -22,9 +22,6 @@ use Symfony\Component\HttpFoundation\Request;
  */
 final readonly class DispatcherRequestFactory
 {
-    /** Methods whose url-encoded body PHP or Symfony parse into the request parameters. */
-    private const FORM_METHODS = ['POST', 'PUT', 'PATCH', 'DELETE'];
-
     /** @var array<string, mixed> */
     private array $boot;
 
@@ -42,13 +39,15 @@ final readonly class DispatcherRequestFactory
         $query = \explode('?', $source->target, 2)[1] ?? '';
         $uploads = [];
 
+        // A body is read by its framing, never by the method name: a form is parsed for any method, where PHP
+        // fills `$_POST` and `$_FILES` for `POST` alone.
         try {
             if ($source->body instanceof Multipart) {
                 $post = self::parseFields($source->body);
                 $files = self::createFiles($source->body, $uploads);
                 $content = '';
             } else {
-                $post = self::parseForm($source->method, $source->body, $headers);
+                $post = self::parseForm($source->body, $headers);
                 $files = [];
                 $content = $source->body;
             }
@@ -76,6 +75,32 @@ final readonly class DispatcherRequestFactory
     }
 
     /**
+     * PHP drops an upload whose name has an unclosed bracket or text after a `]` instead of repairing it
+     * as it does for a text field: `a[b`, `a]`, `a[b]c` and `a[[b]]` never reach `$_FILES`.
+     *
+     * @psalm-pure
+     */
+    private static function isUploadName(string $name): bool
+    {
+        $depth = 0;
+        for ($i = 0, $length = \strlen($name); $i < $length; ++$i) {
+            if ($name[$i] === '[') {
+                ++$depth;
+            } elseif ($name[$i] === ']') {
+                --$depth;
+                if ($i + 1 < $length && $name[$i + 1] !== '[') {
+                    return false;
+                }
+            }
+            if ($depth < 0) {
+                return false;
+            }
+        }
+
+        return $depth === 0;
+    }
+
+    /**
      * @param array<non-empty-string, list<string>> $headers
      *
      * @return array<lowercase-string, array{non-empty-string, list<string>}> The values of every spelling
@@ -87,6 +112,13 @@ final readonly class DispatcherRequestFactory
     {
         $merged = [];
         foreach ($headers as $name => $values) {
+            // In Worker mode the host drops a field named outside `[A-Za-z0-9-]` before filling `$_SERVER`,
+            // and Symfony reads `_` in a header name as `-`: `X_Forwarded_For` would pose as
+            // `X-Forwarded-For` in both the server and the header bag.
+            if (\preg_match('/^[A-Za-z0-9-]+$/D', $name) !== 1) {
+                continue;
+            }
+
             $lower = \strtolower($name);
             if (isset($merged[$lower])) {
                 $merged[$lower][1] = [...$merged[$lower][1], ...$values];
@@ -103,14 +135,11 @@ final readonly class DispatcherRequestFactory
      *
      * @return array<array-key, mixed>
      */
-    private static function parseForm(string $method, string $body, array $headers): array
+    private static function parseForm(string $body, array $headers): array
     {
-        if (!\in_array($method, self::FORM_METHODS, true)) {
-            return [];
-        }
-
-        $contentType = \strtolower(\implode(', ', $headers['content-type'][1] ?? []));
-        if (\preg_match('~^application/x-www-form-urlencoded(?:$|[ ;])~', $contentType) !== 1) {
+        // PHP compares the media type case-insensitively, cut at the first `;`, `,` or space.
+        $contentType = \implode(', ', $headers['content-type'][1] ?? []);
+        if (\preg_match('~^application/x-www-form-urlencoded(?:$|[;, ])~i', $contentType) !== 1) {
             return [];
         }
 
@@ -144,6 +173,9 @@ final readonly class DispatcherRequestFactory
         $pairs = [];
         $files = [];
         foreach ($multipart->files as $index => $file) {
+            if (!self::isUploadName($file->name)) {
+                continue;
+            }
             $pairs[] = \rawurlencode($file->name) . '=' . $index;
             $files[$index] = self::createFile($file, $uploads);
         }
@@ -181,21 +213,37 @@ final readonly class DispatcherRequestFactory
     }
 
     /**
-     * Parses a `Cookie` header the way PHP fills `$_COOKIE`: names and values URL-decoded, names mangled
-     * and nested by bracket syntax, and the first of two equal names wins.
+     * Parses a `Cookie` header the way PHP fills `$_COOKIE`: `;`-separated pairs with leading whitespace
+     * dropped, names mangled and nested by bracket syntax, values raw-URL-decoded so `+` stays `+`, an
+     * empty value for a pair without `=`, and the first value kept for a repeated plain name.
      *
      * @return array<array-key, mixed>
      */
     private static function parseCookies(string $header): array
     {
         $pairs = [];
+        $seen = [];
         foreach (\explode(';', $header) as $pair) {
-            $parts = \explode('=', \trim($pair), 2);
-            if (\count($parts) !== 2 || $parts[0] === '' || isset($pairs[$parts[0]])) {
+            [$name, $value] = \explode('=', \ltrim($pair, " \t\n\r\v\f"), 2) + [1 => ''];
+            if ($name === '') {
                 continue;
             }
-            // `&` is a legal cookie octet but a separator for `parse_str()`.
-            $pairs[$parts[0]] = \str_replace('&', '%26', $parts[0]) . '=' . \str_replace('&', '%26', $parts[1]);
+
+            // The name alone through `parse_str()` gives the key PHP registers it under.
+            \parse_str(\rawurlencode($name), $probe);
+            $key = \array_key_first($probe);
+            if ($key === null) {
+                continue;
+            }
+
+            // PHP drops a repeated plain name, but a bracketed one still nests into the existing key.
+            if (!\is_array($probe[$key]) && isset($seen[$key])) {
+                continue;
+            }
+            $seen[$key] = true;
+
+            // Re-encoded so `parse_str()` takes `+` and `&` literally instead of as its own syntax.
+            $pairs[] = \rawurlencode($name) . '=' . \rawurlencode(\rawurldecode($value));
         }
 
         return self::parseQuery(\implode('&', $pairs));
@@ -224,16 +272,22 @@ final readonly class DispatcherRequestFactory
      */
     private function createServerParams(RapiraRequest $request, array $headers, string $query): array
     {
+        $https = $request->tls !== null || \str_starts_with($request->uri, 'https:');
+
         $params = [
+            'GATEWAY_INTERFACE' => 'CGI/1.1',
+            'SERVER_SOFTWARE' => 'Rapira',
             'SERVER_PROTOCOL' => $request->protocol,
             'REQUEST_METHOD' => $request->method,
+            'REQUEST_SCHEME' => $https ? 'https' : 'http',
             'REQUEST_URI' => $request->target,
+            'DOCUMENT_URI' => \explode('?', $request->target, 2)[0],
             'QUERY_STRING' => $query,
             'REQUEST_TIME' => (int) $request->receivedAt,
             'REQUEST_TIME_FLOAT' => $request->receivedAt,
         ];
 
-        if (\str_starts_with($request->uri, 'https:') || $request->tls !== null) {
+        if ($https) {
             $params['HTTPS'] = 'on';
         }
 
@@ -254,15 +308,13 @@ final readonly class DispatcherRequestFactory
             $params['SERVER_NAME'] = \trim($host, '[]');
         }
 
-        // Named as the Rapira SAPI names them in Worker mode: `-` and `.` become `_`, and of two fields that
-        // map to one name the later wins.
+        // Named as the Rapira SAPI names them in Worker mode, the content pair under both names.
         foreach ($headers as $lower => [, $values]) {
-            $key = \strtoupper(\str_replace(['-', '.'], '_', $lower));
+            $key = \strtoupper(\str_replace('-', '_', $lower));
             $value = \implode($lower === 'cookie' ? '; ' : ', ', $values);
+            $params['HTTP_' . $key] = $value;
             if ($key === 'CONTENT_TYPE' || $key === 'CONTENT_LENGTH') {
                 $params[$key] = $value;
-            } else {
-                $params['HTTP_' . $key] = $value;
             }
         }
 
