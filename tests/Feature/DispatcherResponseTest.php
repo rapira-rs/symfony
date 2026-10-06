@@ -11,6 +11,7 @@ use Rapira\Sdk\Testing\Double\FakeRuntime;
 use Rapira\Sdk\Testing\Double\Http\FakeExchange;
 use Rapira\Sdk\Testing\Double\Http\FakeHttpDispatcher;
 use Rapira\Symfony\Tests\Support\FakeRuntimeLifecycle;
+use Rapira\Symfony\Tests\Support\ReadCountingStream;
 use Rapira\Symfony\Tests\Support\ScriptedExchange;
 use Rapira\Symfony\Tests\Support\TestKernel;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
@@ -18,6 +19,8 @@ use Symfony\Component\HttpFoundation\Cookie;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use Testo\Assert;
+use Testo\Lifecycle\AfterTest;
+use Testo\Skip;
 use Testo\Test;
 
 /**
@@ -27,6 +30,12 @@ use Testo\Test;
 final class DispatcherResponseTest
 {
     use FakeRuntimeLifecycle;
+
+    #[AfterTest]
+    public function unregisterStreamWrapper(): void
+    {
+        ReadCountingStream::unregister();
+    }
 
     public function ordinaryResponseIsWrittenWithRepeatedHeadersAndCookies(): void
     {
@@ -172,6 +181,26 @@ final class DispatcherResponseTest
             headers: ['Content-Type' => 'application/octet-stream'],
         ))->deleteFileAfterSend(), $exchange);
 
+        Assert::same($exchange->status, 200);
+        Assert::same($exchange->headers['Content-Length'], ['10']);
+        Assert::same(self::deliveredBody($exchange), '');
+        Assert::true($exchange->isFinalized());
+        Assert::false(\is_file($path));
+    }
+
+    #[Skip('known bug: a HEAD request reads the whole file of a BinaryFileResponse')]
+    public function headRequestForAFileDoesNotReadIt(): void
+    {
+        $path = self::file('0123456789');
+        ReadCountingStream::register();
+        $exchange = FakeExchange::for('/file', 'HEAD');
+
+        $this->serve(static fn(): Response => (new BinaryFileResponse(
+            ReadCountingStream::path($path),
+            headers: ['Content-Type' => 'application/octet-stream'],
+        ))->deleteFileAfterSend(), $exchange);
+
+        Assert::same(ReadCountingStream::$bytesRead, 0);
         Assert::same($exchange->status, 200);
         Assert::same($exchange->headers['Content-Length'], ['10']);
         Assert::same(self::deliveredBody($exchange), '');
