@@ -29,7 +29,7 @@ final readonly class WorkerRunner implements RunnerInterface
     {
         \ignore_user_abort(true);
 
-        $boot = BootServer::variables($_SERVER);
+        $boot = BootServer::variables($_SERVER, script: true);
         while ($this->serveNext($boot)) {
             \gc_collect_cycles();
         }

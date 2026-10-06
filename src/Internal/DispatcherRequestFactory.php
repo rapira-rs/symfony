@@ -27,7 +27,7 @@ final readonly class DispatcherRequestFactory
 
     public function __construct()
     {
-        $this->boot = BootServer::variables($_SERVER);
+        $this->boot = BootServer::variables($_SERVER, script: false);
     }
 
     /**
