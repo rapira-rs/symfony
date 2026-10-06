@@ -1,6 +1,6 @@
 # BSD 3-Clause
 
-Copyright (c) 2026, Aleksei Gagarin (roxblnfk).
+Copyright (c) 2026, Rapira.
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
