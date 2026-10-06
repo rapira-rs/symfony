@@ -7,6 +7,7 @@ namespace Rapira\Symfony\Tests\Acceptance;
 use Rapira\Sdk\Common\Mode;
 use Rapira\Sdk\Testing\Testo\Attribute\RunRapira;
 use Rapira\Symfony\Tests\Acceptance\Support\ServerRequests;
+use Testo\Skip;
 use Testo\Test;
 
 /**
@@ -19,6 +20,12 @@ final class WorkerModeTest
     use ServerRequests;
 
     private const ADDRESS = '127.0.0.1:8082';
+
+    #[Skip('known bug: ob_flush() in a StreamedResponse callback fails without an output buffer and cuts the response')]
+    public function flushingStreamArrivesWholeAndTheApplicationGoesOn(): void
+    {
+        $this->assertFlushingStreamArrivesWhole(sameWorker: true);
+    }
 
     protected function mode(): Mode
     {

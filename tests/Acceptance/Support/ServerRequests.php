@@ -32,6 +32,24 @@ trait ServerRequests
     abstract protected function mode(): Mode;
 
     /**
+     * A response that flushes from inside its callback arrives whole, and the application goes on serving.
+     *
+     * @param bool $sameWorker Also require the next request to reach the same boot of the application,
+     *        which only a resident mode keeps.
+     */
+    private function assertFlushingStreamArrivesWhole(bool $sameWorker): void
+    {
+        [, $boot] = $this->request('/boot');
+
+        [$status, $body] = $this->request('/stream');
+
+        Assert::same($status, 200);
+        Assert::same($body, 'onetwo');
+        Assert::same($this->request('/'), [200, 'OK']);
+        $sameWorker and Assert::same($this->request('/boot')[1], $boot);
+    }
+
+    /**
      * @return array{0: int, 1: string} The response status code and body.
      */
     private function request(string $path): array

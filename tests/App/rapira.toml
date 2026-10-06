@@ -5,3 +5,5 @@ listen = "127.0.0.1:8080"
 entrypoint = "public/index.php"
 # "dispatcher", "worker" or "classic": the same public/index.php serves all three.
 mode = "worker"
+# One process, so consecutive requests reach the same worker.
+processes = 1
