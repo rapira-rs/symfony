@@ -16,7 +16,8 @@ use Symfony\Component\HttpFoundation\Response;
 /**
  * Writes a Symfony response into one exchange: the Dispatcher-mode counterpart of {@see Response::send()}.
  *
- * A buffered body goes out with the head. A file of a {@see BinaryFileResponse} is handed to the host with
+ * A buffered body goes out with the head, in one write when it fits {@see BODY_CHUNK_SIZE}. A file of a
+ * {@see BinaryFileResponse} is handed to the host with
  * {@see Exchange::sendFile()}, so PHP never holds its bytes. Anything else that prints its body is
  * captured from the output layer and forwarded in chunks, the head going out with the first one, so a
  * body that fails before printing anything can still be answered with an error.
@@ -31,6 +32,9 @@ final class ExchangeResponseEmitter
      */
     private const CHUNK_SIZE = 8192;
 
+    /** Bytes of a buffered body per write; a longer body goes out in several, under its known length. */
+    private const BODY_CHUNK_SIZE = 8_388_608;
+
     private bool $headWritten = false;
 
     /**
@@ -41,14 +45,17 @@ final class ExchangeResponseEmitter
     ) {}
 
     /**
+     *
+     * @param string $prefix Output the application printed while it built the response. It goes out ahead of
+     *        the body, as it would under a SAPI, except ahead of a file sent under the length prepare() set.
      * @throws ResponseDiscardedException The host closed the exchange: the client left or the deadline passed.
      * @throws UnsentResponseException The response failed before its head was written.
      * @throws OutputBufferException The body left the output buffer stack in a state that cannot be restored.
      */
-    public function emit(Request $request, Response $response): void
+    public function emit(Request $request, Response $response, string $prefix = ''): void
     {
         try {
-            $this->send($request, $response);
+            $this->send($request, $response, $prefix);
         } catch (ResponseDiscardedException|OutputBufferException $exception) {
             throw $exception;
         } catch (\Throwable $exception) {
@@ -99,9 +106,12 @@ final class ExchangeResponseEmitter
     }
 
     /**
+     * @param bool $keepLength False drops the response's `Content-Length`: the host computes the length of a
+     *        body it is given whole and enforces a declared one, so a stale value would fail the response.
+     *
      * @return array<non-empty-string, list<string>>
      */
-    private static function headers(Response $response): array
+    private static function headers(Response $response, bool $keepLength = true): array
     {
         $headers = [];
         /**
@@ -109,6 +119,9 @@ final class ExchangeResponseEmitter
          * @var list<string|null> $values
          */
         foreach ($response->headers->allPreserveCaseWithoutCookies() as $name => $values) {
+            if (!$keepLength && \strcasecmp($name, 'Content-Length') === 0) {
+                continue;
+            }
             foreach ($values as $value) {
                 $headers[$name][] = (string) $value;
             }
@@ -121,7 +134,7 @@ final class ExchangeResponseEmitter
         return $headers;
     }
 
-    private function send(Request $request, Response $response): void
+    private function send(Request $request, Response $response, string $prefix): void
     {
         $status = $response->getStatusCode();
         if ($status < 200 && $status !== 101) {
@@ -165,18 +178,43 @@ final class ExchangeResponseEmitter
 
         $content = $response->getContent();
         if ($content !== false) {
+            $this->writeBuffered($status, self::headers($response, keepLength: false), $prefix . $content);
+
+            return;
+        }
+
+        $prefix === '' or $headers = self::headers($response, keepLength: false);
+        // Held back until the body prints, so a body that fails first can still be answered with an error.
+        $this->sendContent($response, function (string $chunk) use ($status, $headers, &$prefix): void {
+            $this->headWritten or $this->writeHead($status, $headers);
+            $this->writeBody($prefix . $chunk, false);
+            $prefix = '';
+        });
+        $this->headWritten or $this->writeHead($status, $headers);
+        $this->writeBody($prefix);
+    }
+
+    /**
+     * @param int<100, 599> $status
+     * @param array<non-empty-string, list<string>> $headers
+     */
+    private function writeBuffered(int $status, array $headers, string $content): void
+    {
+        $length = \strlen($content);
+        if ($length <= self::BODY_CHUNK_SIZE) {
             $this->writeHead($status, $headers);
             $this->writeBody($content);
 
             return;
         }
 
-        $this->sendContent($response, function (string $chunk) use ($status, $headers): void {
-            $this->headWritten or $this->writeHead($status, $headers);
-            $this->writeBody($chunk, false);
-        });
-        $this->headWritten or $this->writeHead($status, $headers);
-        $this->writeBody('');
+        // Keeps HTTP/1.1 off chunked encoding: the length is known, only the writes are split.
+        $headers['Content-Length'] = [(string) $length];
+        $this->writeHead($status, $headers);
+        for ($offset = 0; $offset + self::BODY_CHUNK_SIZE < $length; $offset += self::BODY_CHUNK_SIZE) {
+            $this->writeBody(\substr($content, $offset, self::BODY_CHUNK_SIZE), false);
+        }
+        $this->writeBody(\substr($content, $offset));
     }
 
     /**
