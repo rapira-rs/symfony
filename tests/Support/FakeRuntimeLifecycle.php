@@ -1,0 +1,43 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Rapira\Symfony\Tests\Support;
+
+use Rapira\Sdk\Testing\Double\FakeRuntime;
+use Rapira\Symfony\Runtime;
+use Testo\Lifecycle\AfterTest;
+use Testo\Lifecycle\BeforeTest;
+
+/**
+ * Builds the bridge's {@see Runtime} over an installed {@see FakeRuntime}, and puts the process back
+ * as it was after each test: the double uninstalled, and the superglobals the Runtime and the test
+ * wrote restored.
+ */
+trait FakeRuntimeLifecycle
+{
+    /** @var list<array<array-key, mixed>> */
+    private array $processGlobals = [];
+
+    #[BeforeTest]
+    public function rememberProcessGlobals(): void
+    {
+        $this->processGlobals = [$_SERVER, $_ENV, $_GET, $_POST, $_COOKIE, $_FILES, $_REQUEST];
+    }
+
+    #[AfterTest]
+    public function resetRuntime(): void
+    {
+        FakeRuntime::reset();
+        [$_SERVER, $_ENV, $_GET, $_POST, $_COOKIE, $_FILES, $_REQUEST] = $this->processGlobals;
+    }
+
+    /**
+     * The Runtime as `autoload_runtime.php` would build it, minus the process-wide error handler and the
+     * debug-mode `umask(0)`, which would outlive the test.
+     */
+    private static function runtime(): Runtime
+    {
+        return new Runtime(['debug' => false, 'error_handler' => false, 'env' => 'test']);
+    }
+}

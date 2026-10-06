@@ -2,30 +2,37 @@
 
 declare(strict_types=1);
 
-namespace Rapira\Symfony\Tests\Unit;
+namespace Rapira\Symfony\Tests\Feature;
 
 use Rapira\Http\FormField;
 use Rapira\Http\Multipart;
 use Rapira\Http\Request as RapiraRequest;
 use Rapira\Http\UploadedFile as RapiraUploadedFile;
 use Rapira\InetAddress;
+use Rapira\Mode;
+use Rapira\Sdk\Testing\Double\FakeRuntime;
+use Rapira\Sdk\Testing\Double\Http\FakeExchange;
+use Rapira\Sdk\Testing\Double\Http\FakeHttpDispatcher;
+use Rapira\Symfony\Tests\Support\FakeRuntimeLifecycle;
+use Rapira\Symfony\Tests\Support\TestKernel;
 use Rapira\UnixAddress;
-use Rapira\Symfony\Internal\DispatcherRequestFactory;
-use Rapira\Symfony\Tests\Support\IsolatesProcessState;
 use Symfony\Component\HttpFoundation\File\UploadedFile;
+use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Response;
 use Testo\Assert;
-use Testo\Expect;
 use Testo\Test;
 
+/**
+ * The Symfony request an application sees for an exchange in {@see Mode::Dispatcher}.
+ */
 #[Test]
-final class DispatcherRequestFactoryTest
+final class DispatcherRequestTest
 {
-    use IsolatesProcessState;
+    use FakeRuntimeLifecycle;
 
-    public function convertsRequestWithoutMutatingGlobals(): void
+    public function requestDataReachesTheApplicationWithoutTouchingTheGlobals(): void
     {
         $_SERVER = [
-            'APP_ENV' => 'test',
             'APP_CUSTOM_SETTING' => 'kept',
             'SCRIPT_FILENAME' => '/app/public/index.php',
             'HTTP_BOOT_ONLY' => 'no',
@@ -41,15 +48,12 @@ final class DispatcherRequestFactoryTest
             'SERVER_PORT' => 2,
             'CONTENT_TYPE' => 'text/boot',
             'CONTENT_LENGTH' => '999',
-        ];
+        ] + $_SERVER;
         $_GET = ['global' => 'unchanged'];
         $_POST = ['global' => 'unchanged'];
         $_COOKIE = ['global' => 'unchanged'];
         $_FILES = ['global' => 'unchanged'];
-        $globals = [$_SERVER, $_GET, $_POST, $_COOKIE, $_FILES];
-
-        $factory = new DispatcherRequestFactory($_SERVER);
-        $converted = $factory->create(self::request(
+        $exchange = new FakeExchange(self::request(
             method: 'POST',
             uri: 'https://example.test/path?q=one&q=two',
             target: '/path?q=one&q=two&raw=%2F',
@@ -63,9 +67,10 @@ final class DispatcherRequestFactoryTest
                 'Content-Type' => ['application/json'],
                 'Content-Length' => ['20'],
             ],
-            body: "{\"binary\":\"\\u0000\"}",
+            body: '{"binary":"\u0000"}',
         ));
-        $request = $converted->request;
+
+        [$request, $globals] = $this->serveWithGlobals($exchange);
 
         Assert::same($request->getMethod(), 'POST');
         Assert::same($request->server->get('RAPIRA_REQUEST_METHOD'), 'POST');
@@ -83,7 +88,7 @@ final class DispatcherRequestFactoryTest
         Assert::same($request->server->get('CONTENT_LENGTH'), '20');
         Assert::same($request->headers->all('x-repeat'), ['one', 'two']);
         Assert::same($request->cookies->all(), ['a' => '1', 'b' => '2']);
-        Assert::same($request->getContent(), "{\"binary\":\"\\u0000\"}");
+        Assert::same($request->getContent(), '{"binary":"\u0000"}');
         Assert::same($request->server->get('APP_ENV'), 'test');
         Assert::same($request->server->get('APP_CUSTOM_SETTING'), 'kept');
         Assert::same($request->server->get('SCRIPT_FILENAME'), '/app/public/index.php');
@@ -91,10 +96,9 @@ final class DispatcherRequestFactoryTest
         Assert::same([$_SERVER, $_GET, $_POST, $_COOKIE, $_FILES], $globals);
     }
 
-    public function omitsStaleBootRequestMetadataAndKeepsPhysicalListener(): void
+    public function requestMetadataOfTheBootIsNotInheritedAndTheListenerIsKept(): void
     {
-        $boot = [
-            'APP_ENV' => 'test',
+        $_SERVER = [
             'AUTH_TYPE' => 'Basic',
             'CONTENT_LENGTH' => '999',
             'CONTENT_TYPE' => 'text/boot',
@@ -105,15 +109,22 @@ final class DispatcherRequestFactoryTest
             'SERVER_ADDR' => '192.0.2.2',
             'SERVER_PORT' => 2,
             'SERVER_PROTOCOL' => 'HTTP/0.9',
-        ];
-        $factory = new DispatcherRequestFactory($boot);
+        ] + $_SERVER;
+        $kernel = new TestKernel();
 
-        $internet = $factory->create(self::request(
+        $this->serve($kernel, new FakeExchange(self::request(
             uri: 'http://public.example:9443/plain',
             target: '/plain',
             remote: new UnixAddress(null),
             server: new InetAddress('10.0.0.8', 8443),
-        ))->request;
+        )), new FakeExchange(self::request(
+            uri: 'http://localhost/unix',
+            target: '/unix',
+            remote: new UnixAddress(null),
+            server: new UnixAddress('/run/rapira.sock'),
+        )));
+
+        [$internet, $unix] = $kernel->requests;
         Assert::same($internet->server->get('SERVER_ADDR'), '10.0.0.8');
         Assert::same($internet->server->get('SERVER_PORT'), 8443);
         Assert::same($internet->server->get('SERVER_PROTOCOL'), 'HTTP/1.1');
@@ -121,115 +132,106 @@ final class DispatcherRequestFactoryTest
         foreach (['AUTH_TYPE', 'CONTENT_LENGTH', 'CONTENT_TYPE', 'HTTPS', 'REMOTE_ADDR', 'REMOTE_PORT', 'REQUEST_SCHEME'] as $key) {
             Assert::false($internet->server->has($key), $key);
         }
-
-        $unix = $factory->create(self::request(
-            uri: 'http://localhost/unix',
-            target: '/unix',
-            remote: new UnixAddress(null),
-            server: new UnixAddress('/run/rapira.sock'),
-        ))->request;
-        Assert::false($unix->server->has('SERVER_ADDR'));
-        Assert::false($unix->server->has('SERVER_PORT'));
-        Assert::false($unix->server->has('REMOTE_ADDR'));
-        Assert::false($unix->server->has('REMOTE_PORT'));
-        Assert::false($unix->server->has('HTTPS'));
-        Assert::false($unix->server->has('CONTENT_TYPE'));
-        Assert::false($unix->server->has('CONTENT_LENGTH'));
+        foreach (['SERVER_ADDR', 'SERVER_PORT', 'REMOTE_ADDR', 'REMOTE_PORT', 'HTTPS', 'CONTENT_TYPE', 'CONTENT_LENGTH'] as $key) {
+            Assert::false($unix->server->has($key), $key);
+        }
     }
 
-    public function preservesUrlEncodedAndMultipartNestedDataAndCleansUploadCopies(): void
+    public function urlEncodedFormIsParsedIntoNestedFields(): void
     {
-        $form = (new DispatcherRequestFactory([]))->create(self::request(
-            method: 'POST',
-            headers: ['Content-Type' => ['application/x-www-form-urlencoded']],
-            body: 'user[name]=Ada&items[]=one&items[]=two',
-        ))->request;
-        Assert::same($form->request->all(), [
+        $request = $this->serveOne(FakeExchange::for(
+            '/form',
+            'POST',
+            ['content-type' => ['application/x-www-form-urlencoded']],
+            'user[name]=Ada&items[]=one&items[]=two',
+        ));
+
+        Assert::same($request->request->all(), [
             'user' => ['name' => 'Ada'],
             'items' => ['one', 'two'],
         ]);
+    }
 
-        $source = \tempnam(\sys_get_temp_dir(), 'rapira-source-');
-        \file_put_contents($source, 'upload-body');
-        $multipart = new Multipart(
+    public function multipartFieldsAndFilesKeepTheirNestingAndUploadCopiesAreRemovedAfterwards(): void
+    {
+        $source = self::file('upload-body');
+        $seen = [];
+        $kernel = new TestKernel(static function (Request $request) use (&$seen): Response {
+            $file = $request->files->all()['files']['docs'][0];
+            Assert::true($file instanceof UploadedFile);
+            $seen = [
+                'fields' => $request->request->all(),
+                'name' => $file->getClientOriginalName(),
+                'content' => \file_get_contents($file->getPathname()),
+                'path' => $file->getPathname(),
+                'empty' => $request->files->all()['empty']->getError(),
+            ];
+
+            return new Response();
+        });
+
+        $this->serve($kernel, FakeExchange::for('/upload', 'POST', body: new Multipart(
             [new FormField('meta[name]', 'Ada', [])],
             [
                 new RapiraUploadedFile('files[docs][]', 'note.txt', 'text/plain', [], $source, 11),
                 new RapiraUploadedFile('empty', '', null, [], $source, 0),
             ],
-        );
-        $converted = (new DispatcherRequestFactory([]))->create(self::request(
-            method: 'POST',
-            body: $multipart,
-        ));
-        $request = $converted->request;
+        )));
 
-        Assert::same($request->request->all(), ['meta' => ['name' => 'Ada']]);
-        $file = $request->files->all()['files']['docs'][0];
-        Assert::true($file instanceof UploadedFile);
-        Assert::same($file->getClientOriginalName(), 'note.txt');
-        Assert::same(\file_get_contents($file->getPathname()), 'upload-body');
-        Assert::same($request->files->all()['empty']->getError(), \UPLOAD_ERR_NO_FILE);
-        $copy = $file->getPathname();
-        Assert::true(\is_file($copy));
-
-        $converted->cleanup();
-
-        Assert::false(\is_file($copy));
+        Assert::same($seen['fields'], ['meta' => ['name' => 'Ada']]);
+        Assert::same($seen['name'], 'note.txt');
+        Assert::same($seen['content'], 'upload-body');
+        Assert::same($seen['empty'], \UPLOAD_ERR_NO_FILE);
+        Assert::false(\is_file($seen['path']));
         Assert::true(\is_file($source));
         @\unlink($source);
     }
 
-    public function rejectsUnreadableNamedUploadWithoutCreatingTemporaryFiles(): void
+    /**
+     * Holds whether the failure stops the loop or is answered.
+     */
+    public function unreadableUploadLeavesNoTemporaryCopies(): void
     {
-        $source = \tempnam(\sys_get_temp_dir(), 'rapira-source-');
-        \file_put_contents($source, 'first');
-        $before = self::uploadTempPaths();
+        $source = self::file('first');
+        $before = self::uploadCopies();
         $missing = \sys_get_temp_dir() . '/rapira-missing-' . \bin2hex(\random_bytes(8));
-        $multipart = new Multipart([], [
+        $exchange = FakeExchange::for('/upload', 'POST', body: new Multipart([], [
             new RapiraUploadedFile('first', 'first.txt', 'text/plain', [], $source, 5),
             new RapiraUploadedFile('empty', '', null, [], $missing, 0),
             new RapiraUploadedFile('file', 'named.txt', 'text/plain', [], $missing, 10),
-        ]);
+        ]));
+        $kernel = new TestKernel();
 
-        Expect::exception(\RuntimeException::class)
-            ->withMessage(\sprintf('Unable to read Rapira upload "%s".', $missing));
         try {
-            (new DispatcherRequestFactory([]))->create(self::request(body: $multipart));
+            $this->serve($kernel, $exchange);
+        } catch (\RuntimeException $exception) {
+            Assert::same($exception->getMessage(), \sprintf('Unable to read Rapira upload "%s".', $missing));
         } finally {
-            Assert::same(self::uploadTempPaths(), $before);
             @\unlink($source);
         }
+
+        Assert::same($kernel->requests, []);
+        Assert::same(self::uploadCopies(), $before);
     }
 
-    public function leavesMovedUploadAliveAfterCleanup(): void
+    public function uploadMovedByTheApplicationSurvivesTheCleanup(): void
     {
-        $source = \tempnam(\sys_get_temp_dir(), 'rapira-source-');
-        \file_put_contents($source, 'keep');
-        $multipart = new Multipart([], [
-            new RapiraUploadedFile('file', 'file.txt', 'text/plain', [], $source, 4),
-        ]);
-        $converted = (new DispatcherRequestFactory([]))->create(self::request(body: $multipart));
+        $source = self::file('keep');
         $destination = \tempnam(\sys_get_temp_dir(), 'rapira-moved-');
         @\unlink($destination);
-        $converted->request->files->get('file')->move(\dirname($destination), \basename($destination));
+        $kernel = new TestKernel(static function (Request $request) use ($destination): Response {
+            $request->files->get('file')->move(\dirname($destination), \basename($destination));
 
-        $converted->cleanup();
+            return new Response();
+        });
+
+        $this->serve($kernel, FakeExchange::for('/upload', 'POST', body: new Multipart([], [
+            new RapiraUploadedFile('file', 'file.txt', 'text/plain', [], $source, 4),
+        ])));
 
         Assert::same(\file_get_contents($destination), 'keep');
         @\unlink($destination);
         @\unlink($source);
-    }
-
-    /**
-     * @return list<string>
-     */
-    private static function uploadTempPaths(): array
-    {
-        $paths = \glob(\sys_get_temp_dir() . '/rapira-upload-*') ?: [];
-        \sort($paths);
-
-        return $paths;
     }
 
     /**
@@ -238,8 +240,6 @@ final class DispatcherRequestFactoryTest
      * @param non-empty-string $target
      * @param non-empty-string $protocol
      * @param array<non-empty-string, list<string>> $headers
-     * @param InetAddress|UnixAddress $remote
-     * @param InetAddress|UnixAddress $server
      */
     private static function request(
         string $method = 'GET',
@@ -264,5 +264,57 @@ final class DispatcherRequestFactoryTest
             null,
             1_700_000_000.5,
         );
+    }
+
+    private static function file(string $content): string
+    {
+        $path = \tempnam(\sys_get_temp_dir(), 'rapira-source-');
+        \file_put_contents($path, $content);
+
+        return $path;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function uploadCopies(): array
+    {
+        $paths = \glob(\sys_get_temp_dir() . '/rapira-upload-*') ?: [];
+        \sort($paths);
+
+        return $paths;
+    }
+
+    /**
+     * Serves one exchange and returns the request the application saw, with the superglobals as they were
+     * just before the loop started.
+     *
+     * @return array{Request, list<array<array-key, mixed>>}
+     */
+    private function serveWithGlobals(FakeExchange $exchange): array
+    {
+        $kernel = new TestKernel();
+        (new FakeRuntime(Mode::Dispatcher, new FakeHttpDispatcher($exchange)))->install();
+        $runner = self::runtime()->getRunner($kernel);
+        $globals = [$_SERVER, $_GET, $_POST, $_COOKIE, $_FILES];
+
+        $runner->run();
+
+        return [$kernel->requests[0], $globals];
+    }
+
+    private function serveOne(FakeExchange $exchange): Request
+    {
+        $kernel = new TestKernel();
+        $this->serve($kernel, $exchange);
+
+        return $kernel->requests[0];
+    }
+
+    private function serve(TestKernel $kernel, FakeExchange ...$exchanges): void
+    {
+        (new FakeRuntime(Mode::Dispatcher, new FakeHttpDispatcher(...$exchanges)))->install();
+
+        self::runtime()->getRunner($kernel)->run();
     }
 }

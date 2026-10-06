@@ -81,7 +81,7 @@
         "psalm": "psalm",
         "psalm:ci": "psalm --output-format=github --show-info=false --stats --threads=4",
         "test": "testo",
-        "test:unit": "testo --suite=Unit",
+        "test:feature": "testo --suite=Feature",
         "test:acceptance": "testo --suite=Acceptance"
     }
 }
