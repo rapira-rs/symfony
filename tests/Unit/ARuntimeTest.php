@@ -6,6 +6,7 @@ namespace Rapira\Symfony\Tests\Unit;
 
 use Rapira\Mode;
 use Rapira\Symfony\DispatcherRunner;
+use Rapira\Symfony\Tests\Support\IsolatesProcessState;
 use Rapira\Symfony\Tests\Support\NullKernel;
 use Rapira\Symfony\Tests\Support\RuntimeForMode;
 use Rapira\Symfony\Tests\Support\StubHttpDispatcher;
@@ -17,6 +18,8 @@ use Testo\Test;
 #[Test]
 final class RuntimeTest
 {
+    use IsolatesProcessState;
+
     public function workerModeSelectsWorkerRunnerAndSetsRuntimeModeBeforeSymfonyInitialization(): void
     {
         unset($_SERVER['APP_RUNTIME_MODE']);

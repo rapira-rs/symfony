@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Rapira\Symfony\Tests\Unit;
 
 use Rapira\Symfony\Internal\RequestLoop;
+use Rapira\Symfony\Tests\Support\IsolatesProcessState;
 use Rapira\Symfony\WorkerRunner;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -17,6 +18,8 @@ use Testo\Test;
 #[Test]
 final class WorkerRunnerTest
 {
+    use IsolatesProcessState;
+
     public function servesSequentialRequestsWithFreshGlobalsAndOneResidentKernel(): void
     {
         $_SERVER = [
@@ -54,14 +57,17 @@ final class WorkerRunnerTest
         ]);
 
         \ob_start();
-        $result = (new WorkerRunner($kernel, $loop))->run();
-        $output = (string) \ob_get_clean();
+        try {
+            $result = (new WorkerRunner($kernel, $loop))->run();
+            $output = (string) \ob_get_contents();
+        } finally {
+            \ob_end_clean();
+        }
 
         Assert::same($result, 0);
         Assert::same($output, 'response-1response-2');
         Assert::same($kernel->handled, [
             [
-                'id' => $kernel->handled[0]['id'],
                 'method' => 'GET',
                 'path' => '/first',
                 'query' => 'one',
@@ -73,7 +79,6 @@ final class WorkerRunnerTest
                 'boot_header' => null,
             ],
             [
-                'id' => $kernel->handled[1]['id'],
                 'method' => 'POST',
                 'path' => '/second',
                 'query' => 'two',
@@ -85,7 +90,7 @@ final class WorkerRunnerTest
                 'boot_header' => null,
             ],
         ]);
-        Assert::false($kernel->handled[0]['id'] === $kernel->handled[1]['id']);
+        Assert::false($kernel->requests[0] === $kernel->requests[1]);
         Assert::same($loop->handlers, 2);
     }
 
@@ -97,8 +102,11 @@ final class WorkerRunnerTest
         $loop = new FakeRequestLoop([$this->requestGlobals('/lifecycle')], $events);
 
         \ob_start();
-        $result = (new WorkerRunner($kernel, $loop))->run();
-        \ob_end_clean();
+        try {
+            $result = (new WorkerRunner($kernel, $loop))->run();
+        } finally {
+            \ob_end_clean();
+        }
 
         Assert::same($result, 0);
         Assert::same($events->values, ['loop:before', 'handle', 'send:true', 'loop:after', 'terminate', 'drain']);
@@ -208,10 +216,13 @@ class RecordingKernel implements HttpKernelInterface
     /** @var list<array<string, int|string|null>> */
     public array $handled = [];
 
+    /** @var list<Request> */
+    public array $requests = [];
+
     public function handle(Request $request, int $type = self::MAIN_REQUEST, bool $catch = true): Response
     {
+        $this->requests[] = $request;
         $this->handled[] = [
-            'id' => \spl_object_id($request),
             'method' => $request->getMethod(),
             'path' => $request->getPathInfo(),
             'query' => $request->query->get('q'),

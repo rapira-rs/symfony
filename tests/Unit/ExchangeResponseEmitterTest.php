@@ -9,6 +9,7 @@ use Rapira\Http\Request as RapiraRequest;
 use Rapira\InetAddress;
 use Rapira\Symfony\Internal\ExchangeResponseEmitter;
 use Rapira\Symfony\Internal\ResponseDiscardedException;
+use Rapira\Symfony\Tests\Support\IsolatesProcessState;
 use Rapira\Symfony\Tests\Support\StubExchange;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use Symfony\Component\HttpFoundation\Cookie;
@@ -22,6 +23,8 @@ use Testo\Test;
 #[Test]
 final class ExchangeResponseEmitterTest
 {
+    use IsolatesProcessState;
+
     public function emitsOrdinaryResponseOnceWithRepeatedHeadersAndCookies(): void
     {
         $exchange = $this->exchange();
@@ -164,13 +167,14 @@ try {
 }
 PHP);
 
-        $output = [];
-        $status = 0;
-        \exec('timeout 5 ' . \escapeshellarg(\PHP_BINARY) . ' ' . \escapeshellarg($script) . ' 2>&1', $output, $status);
-        @\unlink($script);
+        try {
+            [$status, $output] = $this->runPhpScript($script);
+        } finally {
+            @\unlink($script);
+        }
 
         Assert::same($status, 0);
-        Assert::true(\str_contains(\implode("\n", $output), 'A nested output buffer cannot be removed safely.'));
+        Assert::true(\str_contains($output, 'A nested output buffer cannot be removed safely.'));
     }
 
     public function eventStreamResponseIsRejectedWhenAvailable(): void
@@ -253,6 +257,55 @@ PHP);
         Assert::same($unsatisfiable->bodies, [['content' => '', 'eos' => true]]);
 
         @\unlink($path);
+    }
+
+    /**
+     * @return array{int, string}
+     */
+    private function runPhpScript(string $script): array
+    {
+        $process = \proc_open(
+            [\PHP_BINARY, $script],
+            [['pipe', 'r'], ['pipe', 'w'], ['pipe', 'w']],
+            $pipes,
+        );
+        if (!\is_resource($process)) {
+            throw new \RuntimeException('Unable to start the PHP subprocess.');
+        }
+
+        \fclose($pipes[0]);
+        \stream_set_blocking($pipes[1], false);
+        \stream_set_blocking($pipes[2], false);
+        $output = '';
+        $exitCode = null;
+        $deadline = \microtime(true) + 5;
+        try {
+            do {
+                $output .= \stream_get_contents($pipes[1]);
+                $output .= \stream_get_contents($pipes[2]);
+                $status = \proc_get_status($process);
+                if (!$status['running']) {
+                    $exitCode = $status['exitcode'];
+                    break;
+                }
+                if (\microtime(true) >= $deadline) {
+                    throw new \RuntimeException('PHP subprocess timed out.');
+                }
+                \usleep(10_000);
+            } while (true);
+
+            $output .= \stream_get_contents($pipes[1]);
+            $output .= \stream_get_contents($pipes[2]);
+        } finally {
+            if (\proc_get_status($process)['running']) {
+                \proc_terminate($process);
+            }
+            \fclose($pipes[1]);
+            \fclose($pipes[2]);
+            $closeStatus = \proc_close($process);
+        }
+
+        return [$exitCode === -1 ? $closeStatus : $exitCode, $output];
     }
 
     private function file(string $content): string
