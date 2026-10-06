@@ -9,9 +9,11 @@ use Rapira\Http\Multipart;
 use Rapira\Http\Request as RapiraRequest;
 use Rapira\Http\UploadedFile as RapiraUploadedFile;
 use Rapira\InetAddress;
+use Rapira\UnixAddress;
 use Rapira\Symfony\Internal\DispatcherRequestFactory;
 use Symfony\Component\HttpFoundation\File\UploadedFile;
 use Testo\Assert;
+use Testo\Expect;
 use Testo\Test;
 
 #[Test]
@@ -21,6 +23,8 @@ final class DispatcherRequestFactoryTest
     {
         $_SERVER = [
             'APP_ENV' => 'test',
+            'APP_CUSTOM_SETTING' => 'kept',
+            'SCRIPT_FILENAME' => '/app/public/index.php',
             'HTTP_BOOT_ONLY' => 'no',
             'REQUEST_METHOD' => 'BOOT',
             'REQUEST_URI' => '/boot',
@@ -71,15 +75,63 @@ final class DispatcherRequestFactoryTest
         Assert::same($request->server->get('REMOTE_ADDR'), '127.0.0.1');
         Assert::same($request->server->get('REMOTE_PORT'), 40000);
         Assert::same($request->server->get('SERVER_ADDR'), '127.0.0.1');
-        Assert::same($request->server->get('SERVER_PORT'), 443);
+        Assert::same($request->server->get('SERVER_PORT'), 8080);
         Assert::same($request->server->get('CONTENT_TYPE'), 'application/json');
         Assert::same($request->server->get('CONTENT_LENGTH'), '20');
         Assert::same($request->headers->all('x-repeat'), ['one', 'two']);
         Assert::same($request->cookies->all(), ['a' => '1', 'b' => '2']);
         Assert::same($request->getContent(), "{\"binary\":\"\\u0000\"}");
         Assert::same($request->server->get('APP_ENV'), 'test');
+        Assert::same($request->server->get('APP_CUSTOM_SETTING'), 'kept');
+        Assert::same($request->server->get('SCRIPT_FILENAME'), '/app/public/index.php');
         Assert::null($request->headers->get('boot-only'));
         Assert::same([$_SERVER, $_GET, $_POST, $_COOKIE, $_FILES], $globals);
+    }
+
+    public function omitsStaleBootRequestMetadataAndKeepsPhysicalListener(): void
+    {
+        $boot = [
+            'APP_ENV' => 'test',
+            'AUTH_TYPE' => 'Basic',
+            'CONTENT_LENGTH' => '999',
+            'CONTENT_TYPE' => 'text/boot',
+            'HTTPS' => 'on',
+            'REMOTE_ADDR' => '192.0.2.1',
+            'REMOTE_PORT' => 1,
+            'REQUEST_SCHEME' => 'https',
+            'SERVER_ADDR' => '192.0.2.2',
+            'SERVER_PORT' => 2,
+            'SERVER_PROTOCOL' => 'HTTP/0.9',
+        ];
+        $factory = new DispatcherRequestFactory($boot);
+
+        $internet = $factory->create(self::request(
+            uri: 'http://public.example:9443/plain',
+            target: '/plain',
+            remote: new UnixAddress(null),
+            server: new InetAddress('10.0.0.8', 8443),
+        ))->request;
+        Assert::same($internet->server->get('SERVER_ADDR'), '10.0.0.8');
+        Assert::same($internet->server->get('SERVER_PORT'), 8443);
+        Assert::same($internet->server->get('SERVER_PROTOCOL'), 'HTTP/1.1');
+        Assert::same($internet->server->get('APP_ENV'), 'test');
+        foreach (['AUTH_TYPE', 'CONTENT_LENGTH', 'CONTENT_TYPE', 'HTTPS', 'REMOTE_ADDR', 'REMOTE_PORT', 'REQUEST_SCHEME'] as $key) {
+            Assert::false($internet->server->has($key), $key);
+        }
+
+        $unix = $factory->create(self::request(
+            uri: 'http://localhost/unix',
+            target: '/unix',
+            remote: new UnixAddress(null),
+            server: new UnixAddress('/run/rapira.sock'),
+        ))->request;
+        Assert::false($unix->server->has('SERVER_ADDR'));
+        Assert::false($unix->server->has('SERVER_PORT'));
+        Assert::false($unix->server->has('REMOTE_ADDR'));
+        Assert::false($unix->server->has('REMOTE_PORT'));
+        Assert::false($unix->server->has('HTTPS'));
+        Assert::false($unix->server->has('CONTENT_TYPE'));
+        Assert::false($unix->server->has('CONTENT_LENGTH'));
     }
 
     public function preservesUrlEncodedAndMultipartNestedDataAndCleansUploadCopies(): void
@@ -125,6 +177,28 @@ final class DispatcherRequestFactoryTest
         @\unlink($source);
     }
 
+    public function rejectsUnreadableNamedUploadWithoutCreatingTemporaryFiles(): void
+    {
+        $source = \tempnam(\sys_get_temp_dir(), 'rapira-source-');
+        \file_put_contents($source, 'first');
+        $before = self::uploadTempPaths();
+        $missing = \sys_get_temp_dir() . '/rapira-missing-' . \bin2hex(\random_bytes(8));
+        $multipart = new Multipart([], [
+            new RapiraUploadedFile('first', 'first.txt', 'text/plain', [], $source, 5),
+            new RapiraUploadedFile('empty', '', null, [], $missing, 0),
+            new RapiraUploadedFile('file', 'named.txt', 'text/plain', [], $missing, 10),
+        ]);
+
+        Expect::exception(\RuntimeException::class)
+            ->withMessage(\sprintf('Unable to read Rapira upload "%s".', $missing));
+        try {
+            (new DispatcherRequestFactory([]))->create(self::request(body: $multipart));
+        } finally {
+            Assert::same(self::uploadTempPaths(), $before);
+            @\unlink($source);
+        }
+    }
+
     public function leavesMovedUploadAliveAfterCleanup(): void
     {
         $source = \tempnam(\sys_get_temp_dir(), 'rapira-source-');
@@ -145,11 +219,24 @@ final class DispatcherRequestFactoryTest
     }
 
     /**
+     * @return list<string>
+     */
+    private static function uploadTempPaths(): array
+    {
+        $paths = \glob(\sys_get_temp_dir() . '/rapira-upload-*') ?: [];
+        \sort($paths);
+
+        return $paths;
+    }
+
+    /**
      * @param non-empty-string $method
      * @param non-empty-string $uri
      * @param non-empty-string $target
      * @param non-empty-string $protocol
      * @param array<non-empty-string, list<string>> $headers
+     * @param InetAddress|UnixAddress $remote
+     * @param InetAddress|UnixAddress $server
      */
     private static function request(
         string $method = 'GET',
@@ -158,6 +245,8 @@ final class DispatcherRequestFactoryTest
         string $protocol = 'HTTP/1.1',
         array $headers = [],
         string|Multipart $body = '',
+        InetAddress|UnixAddress|null $remote = null,
+        InetAddress|UnixAddress|null $server = null,
     ): RapiraRequest {
         return new RapiraRequest(
             $method,
@@ -167,8 +256,8 @@ final class DispatcherRequestFactoryTest
             $protocol,
             $headers,
             $body,
-            new InetAddress('127.0.0.1', 40000),
-            new InetAddress('127.0.0.1', 8080),
+            $remote ?? new InetAddress('127.0.0.1', 40000),
+            $server ?? new InetAddress('127.0.0.1', 8080),
             null,
             1_700_000_000.5,
         );

@@ -4,9 +4,13 @@ Symfony Runtime integration for [Rapira](https://rapira.rs/) Worker and Dispatch
 
 ## Installation
 
+After the first release is published on Packagist, install the package normally:
+
 ```shell
 composer require rapira/symfony
 ```
+
+Until then, applications testing this branch can require `rapira/symfony:dev-feat/symfony-runtime`.
 
 The package requires PHP 8.4 or newer and Symfony 7.4 or 8.0. The Rapira server must be version 0.9.0 or newer; Composer installs the PHP contracts but cannot enforce the version of the Rapira binary.
 
@@ -44,7 +48,7 @@ Alternatively, leave `extra.runtime.class` unset and export the Runtime when Rap
 APP_RUNTIME='Rapira\Symfony\Runtime' rapira serve rapira.toml
 ```
 
-Rapira 0.9.0 imports process environment variables into boot-time `$_SERVER` and `$_ENV`, so Symfony's stock bootstrap sees `APP_RUNTIME`, `APP_ENV`, and `APP_DEBUG`.
+Rapira 0.9.0 imports process environment variables into boot-time `$_SERVER`, which Symfony's stock bootstrap checks before `$_ENV` for `APP_RUNTIME`, `APP_ENV`, and `APP_DEBUG`. PHP also populates `$_ENV` when `variables_order` contains `E`.
 
 Configure Rapira with the current plugin-scoped pool syntax and choose `worker` or `dispatcher`:
 
