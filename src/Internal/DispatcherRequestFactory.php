@@ -8,16 +8,38 @@ use Nyholm\Psr7\Factory\Psr17Factory;
 use Psr\Http\Message\ServerRequestInterface;
 use Rapira\Http\Multipart;
 use Rapira\Http\Request as RapiraRequest;
-use Rapira\Http\UploadedFile as RapiraUploadedFile;
+use Rapira\InetAddress;
 use Symfony\Bridge\PsrHttpMessage\Factory\HttpFoundationFactory;
 use Symfony\Component\HttpFoundation\File\UploadedFile;
-use Symfony\Component\HttpFoundation\Request;
 
 /**
  * @internal
  */
 final readonly class DispatcherRequestFactory
 {
+    private const NON_HTTP_BOOT_SERVER_KEYS = [
+        'DOCUMENT_ROOT',
+        'PATH_TRANSLATED',
+        'PHP_SELF',
+        'SCRIPT_FILENAME',
+        'SCRIPT_NAME',
+    ];
+    private const REQUEST_SERVER_PREFIXES = [
+        'AUTH_',
+        'CONTENT_',
+        'HTTP_',
+        'REMOTE_',
+        'REQUEST_',
+        'SERVER_',
+    ];
+    private const REQUEST_SERVER_KEYS = [
+        'GATEWAY_INTERFACE',
+        'HTTPS',
+        'ORIG_PATH_INFO',
+        'PATH_INFO',
+        'REDIRECT_STATUS',
+    ];
+
     /** @var array<string, mixed> */
     private array $server;
 
@@ -29,9 +51,25 @@ final readonly class DispatcherRequestFactory
      */
     public function __construct(?array $server = null)
     {
+        $sourceServer = $server ?? $_SERVER;
         $this->server = \array_filter(
-            $server ?? $_SERVER,
-            static fn(mixed $key): bool => !\str_starts_with((string) $key, 'HTTP_'),
+            $sourceServer,
+            static function (mixed $key): bool {
+                if (\in_array($key, self::NON_HTTP_BOOT_SERVER_KEYS, true)) {
+                    return true;
+                }
+                if (\in_array($key, self::REQUEST_SERVER_KEYS, true)) {
+                    return false;
+                }
+
+                foreach (self::REQUEST_SERVER_PREFIXES as $prefix) {
+                    if (\str_starts_with($key, $prefix)) {
+                        return false;
+                    }
+                }
+
+                return true;
+            },
             \ARRAY_FILTER_USE_KEY,
         );
 
@@ -43,14 +81,37 @@ final readonly class DispatcherRequestFactory
     {
         $psrRequest = $this->createPsrRequest($this->normalizeRequest($source));
         $psrRequest = $psrRequest->withCookieParams($this->parseCookies($source->headers));
+        $uploadPaths = [];
 
-        $request = $this->httpFoundationFactory->createRequest($psrRequest);
+        try {
+            if ($source->body instanceof Multipart) {
+                [$files, $uploadPaths] = $this->createHttpFoundationFiles($source->body);
+                $psrRequest = $psrRequest->withUploadedFiles([]);
+            } else {
+                $files = [];
+            }
+
+            $request = $this->httpFoundationFactory->createRequest($psrRequest);
+            /** @psalm-suppress MixedArgumentTypeCoercion */
+            $request->files->replace($files);
+        } catch (\Throwable $exception) {
+            $this->cleanupUploadPaths($uploadPaths);
+
+            throw $exception;
+        }
         $request->server->replace($request->server->all() + $this->server);
         $request->server->set('REQUEST_URI', $source->target);
         $request->server->set('RAPIRA_REQUEST_METHOD', $source->method);
+        if ($source->server instanceof InetAddress) {
+            $request->server->set('SERVER_ADDR', $source->server->ip);
+            $request->server->set('SERVER_PORT', $source->server->port);
+        } else {
+            $request->server->remove('SERVER_ADDR');
+            $request->server->remove('SERVER_PORT');
+        }
         $request->attributes->set('rapira.request_method', $source->method);
 
-        return new DispatcherRequest($request, $this->uploadPaths($request));
+        return new DispatcherRequest($request, $uploadPaths);
     }
 
     private function createPsrRequest(RapiraRequest $source): ServerRequestInterface
@@ -73,8 +134,7 @@ final readonly class DispatcherRequestFactory
         if ($source->body instanceof Multipart) {
             return $request
                 ->withBody($this->psr17Factory->createStream())
-                ->withParsedBody($this->parseFields($source->body))
-                ->withUploadedFiles($this->createUploadedFiles($source->body));
+                ->withParsedBody($this->parseFields($source->body));
         }
 
         $request = $request->withBody($this->psr17Factory->createStream($source->body));
@@ -108,13 +168,13 @@ final readonly class DispatcherRequestFactory
         if ($request->tls !== null) {
             $params['HTTPS'] = 'on';
         }
-        if ($request->remote instanceof \Rapira\InetAddress) {
+        if ($request->remote instanceof InetAddress) {
             $params['REMOTE_ADDR'] = $request->remote->ip;
             $params['REMOTE_PORT'] = $request->remote->port;
         } elseif ($request->remote->path !== null) {
             $params['REMOTE_ADDR'] = $request->remote->path;
         }
-        if ($request->server instanceof \Rapira\InetAddress) {
+        if ($request->server instanceof InetAddress) {
             $params['SERVER_ADDR'] = $request->server->ip;
             $params['SERVER_PORT'] = $request->server->port;
         } elseif ($request->server->path !== null) {
@@ -149,33 +209,77 @@ final readonly class DispatcherRequestFactory
     }
 
     /**
-     * @return array<array-key, mixed>
+     * @return array{array<array-key, mixed>, list<string>}
+     *
+     * @psalm-suppress MixedReturnTypeCoercion
      */
-    private function createUploadedFiles(Multipart $multipart): array
+    private function createHttpFoundationFiles(Multipart $multipart): array
     {
         $files = [];
-        foreach ($multipart->files as $file) {
-            $this->addNested($files, $file->name, $this->createUploadedFile($file));
+        /** @var list<string> $paths */
+        $paths = [];
+
+        try {
+            foreach ($multipart->files as $file) {
+                if ($file->clientFilename === '') {
+                    $uploaded = new UploadedFile('', '', null, \UPLOAD_ERR_NO_FILE, true);
+                } else {
+                    $path = \tempnam(\sys_get_temp_dir(), 'rapira-upload-');
+                    if ($path === false) {
+                        throw new \RuntimeException('Unable to create a temporary upload file.');
+                    }
+                    $paths[] = $path;
+
+                    $source = @\fopen($file->tmpPath, 'rb');
+                    if ($source === false) {
+                        throw new \RuntimeException(\sprintf('Unable to read Rapira upload "%s".', $file->tmpPath));
+                    }
+                    $target = @\fopen($path, 'wb');
+                    if ($target === false) {
+                        \fclose($source);
+
+                        throw new \RuntimeException(\sprintf('Unable to write temporary upload "%s".', $path));
+                    }
+
+                    try {
+                        if (\stream_copy_to_stream($source, $target) === false) {
+                            throw new \RuntimeException(\sprintf('Unable to copy Rapira upload "%s".', $file->tmpPath));
+                        }
+                    } finally {
+                        \fclose($source);
+                        \fclose($target);
+                    }
+
+                    $uploaded = new UploadedFile(
+                        $path,
+                        $file->clientFilename,
+                        $file->clientMediaType,
+                        \UPLOAD_ERR_OK,
+                        true,
+                    );
+                }
+
+                $this->addNested($files, $file->name, $uploaded);
+            }
+        } catch (\Throwable $exception) {
+            $this->cleanupUploadPaths($paths);
+
+            throw $exception;
         }
 
-        return $files;
+        return [$files, $paths];
     }
 
-    private function createUploadedFile(RapiraUploadedFile $file): \Psr\Http\Message\UploadedFileInterface
+    /**
+     * @param list<string> $paths
+     */
+    private function cleanupUploadPaths(array $paths): void
     {
-        try {
-            $stream = $this->psr17Factory->createStreamFromFile($file->tmpPath);
-        } catch (\RuntimeException) {
-            $stream = $this->psr17Factory->createStream();
+        foreach ($paths as $path) {
+            if (\is_file($path)) {
+                @\unlink($path);
+            }
         }
-
-        return $this->psr17Factory->createUploadedFile(
-            $stream,
-            $file->size,
-            $file->clientFilename === '' ? \UPLOAD_ERR_NO_FILE : \UPLOAD_ERR_OK,
-            $file->clientFilename,
-            $file->clientMediaType,
-        );
     }
 
     /**
@@ -293,32 +397,5 @@ final readonly class DispatcherRequestFactory
         }
 
         return $cookies;
-    }
-
-    /**
-     * @return list<string>
-     */
-    private function uploadPaths(Request $request): array
-    {
-        $paths = [];
-        $files = $request->files->all();
-        /** @psalm-suppress MixedAssignment */
-        $walk = static function (array $files) use (&$walk, &$paths): void {
-            foreach ($files as $file) {
-                if ($file instanceof UploadedFile) {
-                    if ($file->getError() !== \UPLOAD_ERR_NO_FILE) {
-                        $paths[] = $file->getPathname();
-                    }
-                    continue;
-                }
-
-                if (\is_array($file)) {
-                    $walk($file);
-                }
-            }
-        };
-        $walk($files);
-
-        return $paths;
     }
 }
