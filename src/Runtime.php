@@ -57,6 +57,14 @@ class Runtime extends SymfonyRuntime
     public function getRunner(?object $application): RunnerInterface
     {
         if (!$application instanceof HttpKernelInterface) {
+            // A resident process keeps serving only through a kernel; anything else would run once and exit.
+            $this->mode === Mode::Classic or throw new \LogicException(\sprintf(
+                'Rapira %s mode serves only an %s application; got %s.',
+                $this->mode->name,
+                HttpKernelInterface::class,
+                \get_debug_type($application),
+            ));
+
             return parent::getRunner($application);
         }
 
