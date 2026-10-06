@@ -8,6 +8,7 @@ use Rapira\Exception\WorkDiscardedException;
 use Rapira\Http\Exchange;
 use Rapira\Http\Multipart;
 use Rapira\Http\UploadedFile;
+use Rapira\LogLevel;
 use Rapira\Mode;
 use Rapira\Sdk\Testing\Double\FakeRuntime;
 use Rapira\Sdk\Testing\Double\Http\FakeExchange;
@@ -19,9 +20,9 @@ use Rapira\Symfony\Tests\Support\TestKernel;
 use Symfony\Component\HttpFoundation\EventStreamResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 use Testo\Assert;
 use Testo\Expect;
-use Testo\Skip;
 use Testo\Test;
 
 /**
@@ -174,7 +175,6 @@ final class DispatcherModeTest
         Assert::string($exchange->exchange->getBody())->notContains('event');
     }
 
-    #[Skip('known bug: a request that fails to convert kills the loop instead of answering 500')]
     public function requestConversionFailureIsAnsweredWithAnErrorAndTheLoopGoesOn(): void
     {
         $missing = \sys_get_temp_dir() . '/rapira-missing-' . \bin2hex(\random_bytes(8));
@@ -185,7 +185,6 @@ final class DispatcherModeTest
         $this->assertAnsweredWith500AndTheNextServed($failing, $failing, new TestKernel());
     }
 
-    #[Skip('known bug: an EventStreamResponse kills the loop instead of answering 500')]
     public function eventStreamResponseIsAnsweredWithAnErrorAndTheLoopGoesOn(): void
     {
         $failing = FakeExchange::for('/events');
@@ -196,7 +195,6 @@ final class DispatcherModeTest
         $this->assertAnsweredWith500AndTheNextServed($failing, $failing, $kernel);
     }
 
-    #[Skip('known bug: a terminal 1xx response kills the loop instead of answering 500')]
     public function terminalInterimStatusIsAnsweredWithAnErrorAndTheLoopGoesOn(): void
     {
         $failing = FakeExchange::for('/early');
@@ -207,7 +205,6 @@ final class DispatcherModeTest
         $this->assertAnsweredWith500AndTheNextServed($failing, $failing, $kernel);
     }
 
-    #[Skip('known bug: a header value the host rejects kills the loop instead of answering 500')]
     public function headerValueTheHostRejectsIsAnsweredWithAnErrorAndTheLoopGoesOn(): void
     {
         $failing = new ScriptedExchange(FakeExchange::for('/bad-header'));
@@ -218,6 +215,37 @@ final class DispatcherModeTest
         $this->assertAnsweredWith500AndTheNextServed($failing, $failing->exchange, $kernel);
     }
 
+    public function streamFailingBeforeItPrintsIsAnsweredWithAnErrorAndStillTerminated(): void
+    {
+        $failing = FakeExchange::for('/stream');
+        $kernel = new TestKernel(static fn(Request $request): Response => $request->getPathInfo() === '/stream'
+            ? new StreamedResponse(static fn() => throw new \RuntimeException('stream failed'))
+            : new Response($request->getPathInfo()));
+
+        $this->assertAnsweredWith500AndTheNextServed($failing, $failing, $kernel);
+
+        Assert::same($kernel->events, ['handle:/stream', 'terminate:/stream', 'handle:/next', 'terminate:/next']);
+    }
+
+    public function streamFailingAfterItsHeadIsOutPropagates(): never
+    {
+        $failing = FakeExchange::for('/stream');
+        $kernel = new TestKernel(static fn(): Response => new StreamedResponse(static function (): void {
+            echo 'partial';
+            \ob_flush();
+
+            throw new \RuntimeException('stream failed');
+        }));
+
+        Expect::exception(\RuntimeException::class)->withMessage('stream failed');
+        try {
+            $this->serve($kernel, new FakeHttpDispatcher($failing, FakeExchange::for('/must-not-run')));
+        } finally {
+            Assert::same($failing->getBody(), 'partial');
+            Assert::false($failing->isFinalized());
+        }
+    }
+
     /**
      * @param FakeExchange $answer What $failing records the answer in.
      */
@@ -225,17 +253,22 @@ final class DispatcherModeTest
     {
         $next = FakeExchange::for('/next');
 
-        $this->serve($kernel, new FakeHttpDispatcher($failing, $next));
+        $host = $this->serve($kernel, new FakeHttpDispatcher($failing, $next));
 
         Assert::same($answer->status, 500);
         Assert::true($answer->isFinalized());
         Assert::same($next->getBody(), '/next');
+        Assert::count($host->logs, 1);
+        Assert::same($host->logs[0]['level'], LogLevel::Error);
+        Assert::instanceOf($host->logs[0]['context']['exception'], \Throwable::class);
     }
 
-    private function serve(TestKernel $kernel, FakeHttpDispatcher $dispatcher): void
+    private function serve(TestKernel $kernel, FakeHttpDispatcher $dispatcher): FakeRuntime
     {
-        (new FakeRuntime(Mode::Dispatcher, $dispatcher))->install();
+        $host = (new FakeRuntime(Mode::Dispatcher, $dispatcher))->install();
 
         Assert::same(self::runtime()->getRunner($kernel)->run(), 0);
+
+        return $host;
     }
 }
