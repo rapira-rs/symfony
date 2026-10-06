@@ -40,7 +40,7 @@
         "ext-curl": "*",
         "fidry/cpu-core-counter": "^1.2",
         "llm/skills": "^1.14",
-        "rapira/testing": "^0.1.6",
+        "rapira/testing": "^0.1.7",
         "roxblnfk/unpoly": "^1.8",
         "shipmonk/composer-dependency-analyser": "^1.8.4",
         "spiral/code-style": "^2.3.1",

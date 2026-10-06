@@ -13,7 +13,6 @@ use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Testo\Assert;
 use Testo\Expect;
-use Testo\Skip;
 use Testo\Test;
 
 /**
@@ -86,14 +85,14 @@ final class WorkerModeTest
 
         $this->run($runtime, $kernel);
 
-        Assert::same(\array_slice($kernel->events, 0, 6), [
+        Assert::same($kernel->events, [
             'handle:/one', 'terminate:/one', 'sent:1 served:1',
             'handle:/two', 'terminate:/two', 'sent:2 served:2',
+            'handle:/three', 'terminate:/three', 'sent:3 served:3',
         ]);
         Assert::same($runtime->outputs, ['/one', '/two', '/three']);
     }
 
-    #[Skip('known bug: the request served by the last handle_request() call is never terminated')]
     public function requestServedByTheLastHandleRequestCallIsTerminated(): void
     {
         $runtime = (new FakeRuntime(Mode::Worker, captureOutput: true))
