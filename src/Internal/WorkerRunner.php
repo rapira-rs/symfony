@@ -42,7 +42,8 @@ final readonly class WorkerRunner implements RunnerInterface
 
                 $request = Request::createFromGlobals();
                 $response = $this->kernel->handle($request);
-                $response->send();
+                SapiResponse::send($response);
+                rapira_finish_request();
 
                 return true;
             });
