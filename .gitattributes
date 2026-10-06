@@ -1,0 +1,15 @@
+* text=auto eol=lf
+
+# PHP-aware hunk headers in `git diff`.
+*.php diff=php
+
+# Keep the published package lean: nothing ships in `composer archive` unless
+# re-included below.
+* export-ignore
+
+/composer.json  -export-ignore
+/README.md      -export-ignore
+/CHANGELOG.md   -export-ignore
+/LICENSE.md     -export-ignore
+/src            -export-ignore
+/src/**         -export-ignore
