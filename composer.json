@@ -20,7 +20,7 @@
     "require": {
         "php": ">=8.4",
         "nyholm/psr7": "^1.8",
-        "rapira/contract": "dev-master",
+        "rapira/contract": "0.9.0 as dev-master",
         "rapira/http": "^0.1",
         "symfony/http-foundation": "^7.4 || ^8.0",
         "symfony/http-kernel": "^7.4 || ^8.0",
@@ -28,6 +28,7 @@
         "symfony/runtime": "^7.4 || ^8.0"
     },
     "require-dev": {
+        "fidry/cpu-core-counter": "^1.2",
         "spiral/code-style": "^2.3.1",
         "testo/testo": "^0.10.42",
         "vimeo/psalm": "^7"

@@ -47,7 +47,7 @@ final readonly class DispatcherRunner implements RunnerInterface
                     continue;
                 }
 
-                $converted = $this->requestFactory->create($exchange);
+                $converted = $this->requestFactory->create($exchange->getRequest());
                 $request = $converted->request;
                 $response = $this->kernel->handle($request);
 

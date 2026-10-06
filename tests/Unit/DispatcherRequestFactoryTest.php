@@ -10,7 +10,6 @@ use Rapira\Http\Request as RapiraRequest;
 use Rapira\Http\UploadedFile as RapiraUploadedFile;
 use Rapira\InetAddress;
 use Rapira\Symfony\Internal\DispatcherRequestFactory;
-use Rapira\Symfony\Tests\Support\StubExchange;
 use Symfony\Component\HttpFoundation\File\UploadedFile;
 use Testo\Assert;
 use Testo\Test;
@@ -43,7 +42,7 @@ final class DispatcherRequestFactoryTest
         $globals = [$_SERVER, $_GET, $_POST, $_COOKIE, $_FILES];
 
         $factory = new DispatcherRequestFactory($_SERVER);
-        $converted = $factory->create(new StubExchange(self::request(
+        $converted = $factory->create(self::request(
             method: 'POST',
             uri: 'https://example.test/path?q=one&q=two',
             target: '/path?q=one&q=two&raw=%2F',
@@ -58,7 +57,7 @@ final class DispatcherRequestFactoryTest
                 'Content-Length' => ['20'],
             ],
             body: "{\"binary\":\"\\u0000\"}",
-        )));
+        ));
         $request = $converted->request;
 
         Assert::same($request->getMethod(), 'POST');
@@ -85,11 +84,11 @@ final class DispatcherRequestFactoryTest
 
     public function preservesUrlEncodedAndMultipartNestedDataAndCleansUploadCopies(): void
     {
-        $form = (new DispatcherRequestFactory([]))->create(new StubExchange(self::request(
+        $form = (new DispatcherRequestFactory([]))->create(self::request(
             method: 'POST',
             headers: ['Content-Type' => ['application/x-www-form-urlencoded']],
             body: 'user[name]=Ada&items[]=one&items[]=two',
-        )))->request;
+        ))->request;
         Assert::same($form->request->all(), [
             'user' => ['name' => 'Ada'],
             'items' => ['one', 'two'],
@@ -104,10 +103,10 @@ final class DispatcherRequestFactoryTest
                 new RapiraUploadedFile('empty', '', null, [], $source, 0),
             ],
         );
-        $converted = (new DispatcherRequestFactory([]))->create(new StubExchange(self::request(
+        $converted = (new DispatcherRequestFactory([]))->create(self::request(
             method: 'POST',
             body: $multipart,
-        )));
+        ));
         $request = $converted->request;
 
         Assert::same($request->request->all(), ['meta' => ['name' => 'Ada']]);
@@ -133,7 +132,7 @@ final class DispatcherRequestFactoryTest
         $multipart = new Multipart([], [
             new RapiraUploadedFile('file', 'file.txt', 'text/plain', [], $source, 4),
         ]);
-        $converted = (new DispatcherRequestFactory([]))->create(new StubExchange(self::request(body: $multipart)));
+        $converted = (new DispatcherRequestFactory([]))->create(self::request(body: $multipart));
         $destination = \tempnam(\sys_get_temp_dir(), 'rapira-moved-');
         @\unlink($destination);
         $converted->request->files->get('file')->move(\dirname($destination), \basename($destination));

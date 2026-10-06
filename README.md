@@ -4,30 +4,27 @@ Symfony Runtime integration for [Rapira](https://rapira.rs/) Worker and Dispatch
 
 ## Installation
 
-The Rapira contract currently has no stable release, so require it explicitly:
-
 ```shell
-composer require rapira/symfony rapira/contract:dev-master
+composer require rapira/symfony
 ```
 
-The package requires PHP 8.4 or newer and Symfony 7.4 or 8.0.
+The package requires PHP 8.4 or newer and Symfony 7.4 or 8.0. The Rapira server must be version 0.9.0 or newer; Composer installs the PHP contracts but cannot enforce the version of the Rapira binary.
 
 ## Application setup
 
-Add the Rapira-aware Runtime and autoload template to the application's `composer.json`:
+Select the Runtime in the root application's `composer.json`:
 
 ```json
 {
     "extra": {
         "runtime": {
-            "autoload_template": "vendor/rapira/symfony/src/Internal/autoload_runtime.template",
             "class": "Rapira\\Symfony\\Runtime"
         }
     }
 }
 ```
 
-Run `composer dump-autoload`. Composer generates `vendor/autoload_runtime.php` with the Runtime class and conventional `public/index.php` entrypoint baked in. No `APP_RUNTIME` variable, separate worker script, or custom bootstrap is required:
+Run `composer dump-autoload` after changing the Runtime configuration. Symfony generates its stock `vendor/autoload_runtime.php`; no custom autoload template or separate worker entrypoint is required. Keep the standard generated `public/index.php` unchanged:
 
 ```php
 <?php
@@ -41,22 +38,15 @@ return static function (array $context): Kernel {
 };
 ```
 
-### Released Rapira 0.8.x
+Alternatively, leave `extra.runtime.class` unset and export the Runtime when Rapira starts:
 
-Rapira 0.8.0 and 0.8.1 use the top-level `[pool]` table. Choose `worker` or `dispatcher`:
-
-```toml
-[http]
-listen = "127.0.0.1:8000"
-
-[pool]
-entrypoint = "public/index.php"
-mode = "dispatcher"
+```shell
+APP_RUNTIME='Rapira\Symfony\Runtime' rapira serve rapira.toml
 ```
 
-### Current Rapira `main`
+Rapira 0.9.0 imports process environment variables into boot-time `$_SERVER` and `$_ENV`, so Symfony's stock bootstrap sees `APP_RUNTIME`, `APP_ENV`, and `APP_DEBUG`.
 
-Current `main` uses a plugin-scoped pool:
+Configure Rapira with the current plugin-scoped pool syntax and choose `worker` or `dispatcher`:
 
 ```toml
 [http]
