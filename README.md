@@ -8,7 +8,7 @@ Symfony Runtime for [Rapira](https://rapira.rs/). The same `public/index.php` se
 composer require rapira/symfony
 ```
 
-Requires PHP 8.4 or newer, the Symfony components `http-foundation`, `http-kernel` and `runtime` in versions `^7.4 || ^8.0`, and Rapira 0.9.0 or newer. Composer installs the PHP contract but cannot check the version of the Rapira binary.
+Requires PHP 8.4 or newer, the Symfony components `http-foundation`, `http-kernel` and `runtime` in versions `^7.4 || ^8.0`, and Rapira 0.9.1 or newer: the x86_64 Linux builds of 0.9.0 crash a Dispatcher worker that checks whether its exchange is cancelled. Composer installs the PHP contract but cannot check the version of the Rapira binary.
 
 ## Application setup
 
@@ -57,7 +57,7 @@ The same setup stays valid outside Rapira: under php-fpm or the CLI the Runtime 
 
 - **Classic** sends the response, calls `rapira_finish_request()` so the client has its answer, then runs `kernel->terminate()`.
 - **Worker** loops over `Rapira\handle_request()`. Per request: the request is built from the superglobals, the response is sent and finished, then terminate runs and cyclic garbage is collected.
-- **Dispatcher** takes each `Rapira\Http\Exchange` from the HTTP dispatcher, converts it to a Symfony `Request` and writes the response straight into the exchange. Exchanges are served one at a time.
+- **Dispatcher** takes each `Rapira\Http\Exchange` from the HTTP dispatcher, converts it to a Symfony `Request` and writes the response straight into the exchange. Exchanges are served one at a time; one cancelled while it was queued is skipped.
 
 Worker and Dispatcher serve only an `HttpKernelInterface` application and refuse anything else with a `LogicException`. Rapira owns recycling and `max_requests`; the Runtime adds no request limit of its own.
 
