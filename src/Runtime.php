@@ -9,6 +9,8 @@ use Rapira\Mode;
 use Rapira\Symfony\Internal\ClassicRunner;
 use Rapira\Symfony\Internal\DispatcherRunner;
 use Rapira\Symfony\Internal\WorkerRunner;
+use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\HttpKernelInterface;
 use Symfony\Component\Runtime\RunnerInterface;
 use Symfony\Component\Runtime\SymfonyRuntime;
@@ -70,9 +72,20 @@ class Runtime extends SymfonyRuntime
 
         return match ($this->mode) {
             Mode::Classic => new ClassicRunner($application, (bool) ($this->options['debug'] ?? false)),
-            Mode::Worker => new WorkerRunner($application),
-            Mode::Dispatcher => new DispatcherRunner($application, self::httpDispatcher()),
+            Mode::Worker => new WorkerRunner($application, $this->createFailureResponse(...)),
+            Mode::Dispatcher => new DispatcherRunner($application, self::httpDispatcher(), $this->createFailureResponse(...)),
         };
+    }
+
+    /**
+     * The answer to a failure that escaped the kernel in Worker or Dispatcher mode; the worker stops serving
+     * after it. Override it to render an error page: the kernel answers every other failure itself.
+     *
+     * If it throws, or its response cannot be sent, the request is answered with a plain 500.
+     */
+    protected function createFailureResponse(\Throwable $exception, Request $request): Response
+    {
+        return new Response('Internal Server Error', 500, ['Content-Type' => 'text/plain; charset=UTF-8']);
     }
 
     private static function httpDispatcher(): HttpDispatcher

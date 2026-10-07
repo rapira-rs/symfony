@@ -42,6 +42,8 @@
         "roxblnfk/unpoly": "^1.8",
         "shipmonk/composer-dependency-analyser": "^1.8.4",
         "spiral/code-style": "^2.3.1",
+        "symfony/config": "^7.4 || ^8.0",
+        "symfony/dependency-injection": "^7.4 || ^8.0",
         "testo/assert": "^0.1.17",
         "testo/lifecycle": "^0.1.9",
         "testo/skip": "^0.1.1",
