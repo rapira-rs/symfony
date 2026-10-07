@@ -4,14 +4,17 @@ declare(strict_types=1);
 
 namespace Rapira\Symfony\Tests\Feature;
 
+use Rapira\LogLevel;
 use Rapira\Mode;
 use Rapira\Sdk\Testing\Double\FakeRuntime;
 use Rapira\Sdk\Testing\Double\WorkerRequest;
+use Rapira\Symfony\Tests\Support\BootRecordingKernel;
 use Rapira\Symfony\Tests\Support\FakeRuntimeLifecycle;
 use Rapira\Symfony\Tests\Support\TestKernel;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpFoundation\StreamedResponse;
+use Symfony\Component\HttpKernel\HttpKernelInterface;
 use Testo\Assert;
 use Testo\Expect;
 use Testo\Test;
@@ -162,36 +165,92 @@ final class WorkerModeTest
         Assert::same($kernel->events, ['handle:/one', 'terminate:/one', 'handle:/last', 'terminate:/last']);
     }
 
-    public function terminateFailurePropagatesBeforeTheNextRequest(): never
+    public function kernelBootsBeforeTheFirstRequest(): void
     {
-        $runtime = (new FakeRuntime(Mode::Worker, captureOutput: true))
-            ->queue('GET', '/failure')
-            ->queue('GET', '/must-not-run');
-        $kernel = new TestKernel(terminate: static fn() => throw new \RuntimeException('terminate failed'));
+        $runtime = (new FakeRuntime(Mode::Worker, captureOutput: true))->queue('GET', '/one');
+        $kernel = new BootRecordingKernel(new TestKernel(terminate: static function () use ($runtime, &$kernel): void {
+            $kernel->inner->events[] = 'served:' . $runtime->servedRequests;
+        }));
 
-        Expect::exception(\RuntimeException::class)->withMessage('terminate failed');
+        $this->run($runtime, $kernel);
+
+        Assert::same($kernel->inner->events, ['boot', 'handle:/one', 'terminate:/one', 'served:1']);
+    }
+
+    public function bootFailurePropagatesBeforeAnyRequestIsTaken(): never
+    {
+        $runtime = (new FakeRuntime(Mode::Worker, captureOutput: true))->queue('GET', '/must-not-run');
+        $kernel = new BootRecordingKernel(new TestKernel(), new \RuntimeException('container broken'));
+
+        Expect::exception(\RuntimeException::class)->withMessage('container broken');
         try {
             $this->run($runtime, $kernel);
         } finally {
-            Assert::same($kernel->events, ['handle:/failure', 'terminate:/failure']);
-            Assert::same($runtime->servedRequests, 1);
+            Assert::same($runtime->servedRequests, 0);
         }
     }
 
-    public function kernelFailurePropagatesWithoutTerminatingOrContinuing(): never
+    public function kernelFailureIsAnsweredWithA500LoggedAndEndsTheLoop(): void
     {
         $runtime = (new FakeRuntime(Mode::Worker, captureOutput: true))
             ->queue('GET', '/failure')
             ->queue('GET', '/must-not-run');
+        $failure = new \RuntimeException('kernel failed');
+        $kernel = new TestKernel(static fn() => throw $failure);
+
+        $result = $this->run($runtime, $kernel);
+
+        Assert::same($result, 1);
+        Assert::same($kernel->events, ['handle:/failure']);
+        Assert::same($runtime->servedRequests, 1);
+        Assert::same($runtime->finishedRequests, 1);
+        Assert::same($runtime->outputs, ['Internal Server Error']);
+        Assert::count($runtime->logs, 1);
+        Assert::same($runtime->logs[0]['level'], LogLevel::Error);
+        Assert::same($runtime->logs[0]['context']['exception'], $failure);
+    }
+
+    public function kernelFailureIsAnsweredByAnExtendingRuntime(): void
+    {
+        $runtime = (new FakeRuntime(Mode::Worker, captureOutput: true))->queue('GET', '/failure');
         $kernel = new TestKernel(static fn() => throw new \RuntimeException('kernel failed'));
 
-        Expect::exception(\RuntimeException::class)->withMessage('kernel failed');
-        try {
-            $this->run($runtime, $kernel);
-        } finally {
-            Assert::same($kernel->events, ['handle:/failure']);
-            Assert::same($runtime->servedRequests, 1);
-        }
+        $result = $this->run($runtime, $kernel, static fn(\Throwable $exception, Request $request): Response => new Response(
+            \sprintf('%s at %s', $exception->getMessage(), $request->getPathInfo()),
+        ));
+
+        Assert::same($result, 1);
+        Assert::same($runtime->outputs, ['kernel failed at /failure']);
+    }
+
+    public function failureResponseThatFailsFallsBackToA500(): void
+    {
+        $runtime = (new FakeRuntime(Mode::Worker, captureOutput: true))->queue('GET', '/failure');
+        $kernel = new TestKernel(static fn() => throw new \RuntimeException('kernel failed'));
+
+        $result = $this->run($runtime, $kernel, static fn(): never => throw new \LogicException('page failed'));
+
+        Assert::same($result, 1);
+        Assert::same($runtime->outputs, ['Internal Server Error']);
+        Assert::count($runtime->logs, 1);
+    }
+
+    public function terminateFailureIsLoggedAndEndsTheLoop(): void
+    {
+        $runtime = (new FakeRuntime(Mode::Worker, captureOutput: true))
+            ->queue('GET', '/failure')
+            ->queue('GET', '/must-not-run');
+        $failure = new \RuntimeException('terminate failed');
+        $kernel = new TestKernel(terminate: static fn() => throw $failure);
+
+        $result = $this->run($runtime, $kernel);
+
+        Assert::same($result, 1);
+        Assert::same($kernel->events, ['handle:/failure', 'terminate:/failure']);
+        Assert::same($runtime->outputs, ['/failure']);
+        Assert::same($runtime->servedRequests, 1);
+        Assert::count($runtime->logs, 1);
+        Assert::same($runtime->logs[0]['context']['exception'], $failure);
     }
 
     /**
@@ -211,10 +270,13 @@ final class WorkerModeTest
         ];
     }
 
-    private function run(FakeRuntime $runtime, TestKernel $kernel): int
+    /**
+     * @param null|\Closure(\Throwable, Request): Response $failurePage
+     */
+    private function run(FakeRuntime $runtime, HttpKernelInterface $kernel, ?\Closure $failurePage = null): int
     {
         $runtime->install();
 
-        return self::runtime()->getRunner($kernel)->run();
+        return self::runtime($failurePage)->getRunner($kernel)->run();
     }
 }

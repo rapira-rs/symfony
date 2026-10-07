@@ -63,6 +63,16 @@ Worker and Dispatcher serve only an `HttpKernelInterface` application and refuse
 
 In Classic and Worker modes the response is sent inside an output buffer of its own, flushed every 8 KiB and on every `ob_flush()`, as under php-fpm with `output_buffering`. The host builds a Worker request's `$_SERVER` from the request alone, so the Runtime adds the boot-time variables back, `APP_ENV`, `APP_SECRET` and the rest of the environment, but never boot-time request metadata such as `HTTP_*`, `REMOTE_*` or `HTTPS`.
 
+## Failures
+
+In Worker and Dispatcher modes a Symfony kernel boots before the first request, so a broken container or bundle fails the worker before it takes any work, and Rapira counts it as a failed start. In debug too: such a failure shows in Rapira's log, not in the browser.
+
+The kernel answers the errors of a request itself. A failure that escapes it, such as an exception thrown by a `kernel.exception` listener, leaves the kernel in an unknown state. The request is answered with a plain `500`, the failure is logged through `Rapira\log()`, and the loop ends with exit code `1`. Rapira then runs the script again in a fresh request, booting a new kernel. A failure of `kernel->terminate()` ends the loop the same way, after the client has its answer.
+
+To answer such a failure with an error page, extend the Runtime, override `createFailureResponse()` and name the subclass in `extra.runtime.class` of `composer.json`. If it throws, or its response cannot be sent, the client gets the plain `500`.
+
+In Classic mode failures are left to Symfony's error handler, as under php-fpm.
+
 ## Dispatcher is sequential for Symfony
 
 Dispatcher mode is built for code that serves exchanges concurrently, which rules out per-request superglobals, mutable static state and `header()`. Symfony still serves them one at a time here: a `StreamedResponse` prints its body, so it can only be captured through PHP's process-wide output buffers, and the framework keeps request-related state in statics such as the trusted proxies of `Request` and in services shared by the whole process. An application, or a library, that needs the superglobals or `header()` belongs in Worker mode.
@@ -87,7 +97,7 @@ Responses are prepared by HttpFoundation, with every repeated header and `Set-Co
 - If the client leaves mid-stream, the rest of the output is dropped and terminate still runs. The streaming code is not told: `connection_aborted()` does not reflect the exchange.
 - `EventStreamResponse` is answered with `500`: it closes every output buffer after each event, so nothing is left to capture the next one. Use a `StreamedResponse` that calls `ob_flush()` after each event.
 
-A request that cannot be converted, and a response that fails before its head is written, such as a terminal `1xx` status or a header value the wire cannot carry, are logged through `Rapira\log()` and answered with `400` or `500`, and the worker goes on. A failure of the kernel, of `kernel->terminate()`, or of a response whose head is already out propagates, and Rapira replaces the worker.
+A request that cannot be converted, and a response that fails before its head is written, such as a terminal `1xx` status or a header value the wire cannot carry, are logged through `Rapira\log()` and answered with `400` or `500`, and the worker goes on: the kernel was not involved. A response that fails after its head is out cannot be answered any more; it is logged and ends the loop, as described under [Failures](#failures), and Rapira fails the exchange.
 
 ## Persistent state
 

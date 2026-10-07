@@ -9,7 +9,10 @@ use Rapira\Http\Exchange;
 use Rapira\Http\HttpDispatcher;
 use Rapira\LogLevel;
 use Symfony\Component\HttpFoundation\Exception\RequestExceptionInterface;
+use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\HttpKernelInterface;
+use Symfony\Component\HttpKernel\KernelInterface;
 use Symfony\Component\HttpKernel\TerminableInterface;
 use Symfony\Component\Runtime\RunnerInterface;
 
@@ -17,9 +20,14 @@ use Symfony\Component\Runtime\RunnerInterface;
  * Serves Rapira's Dispatcher mode: takes exchanges from the HTTP dispatcher one at a time and runs each
  * through the resident kernel.
  *
+ * The kernel boots before the first receive(), so a broken container fails the worker before it takes
+ * any exchange, which Rapira counts as a failed start.
+ *
  * A request that cannot be converted, or a response that fails before its head is written, is answered
- * with an error and logged, and the loop goes on. A failure of the kernel, of terminate(), or of a
- * response whose head is out propagates, and the host replaces the worker.
+ * with an error and logged, and the loop goes on. A failure that escapes the kernel, which answers its
+ * own errors, leaves the kernel in an unknown state: the exchange is answered with the failure response,
+ * the failure is logged, and the loop ends for Rapira to run the script afresh. So does a failure of
+ * terminate() or of a response whose head is out, unanswered.
  *
  * @internal
  */
@@ -27,9 +35,13 @@ final readonly class DispatcherRunner implements RunnerInterface
 {
     private DispatcherRequestFactory $requestFactory;
 
+    /**
+     * @param \Closure(\Throwable, Request): Response $failureResponse
+     */
     public function __construct(
         private HttpKernelInterface $kernel,
         private HttpDispatcher $dispatcher,
+        private \Closure $failureResponse,
     ) {
         $this->requestFactory = new DispatcherRequestFactory();
     }
@@ -37,6 +49,8 @@ final readonly class DispatcherRunner implements RunnerInterface
     #[\Override]
     public function run(): int
     {
+        $this->kernel instanceof KernelInterface and $this->kernel->boot();
+
         while (true) {
             try {
                 $exchange = $this->dispatcher->receive();
@@ -44,7 +58,13 @@ final readonly class DispatcherRunner implements RunnerInterface
                 return 0;
             }
 
-            $this->serve($exchange);
+            try {
+                $this->serve($exchange);
+            } catch (\Throwable $exception) {
+                self::report('The worker stops serving after a failure it cannot answer for.', $exception);
+
+                return 1;
+            }
             // Held across receive(), an exchange left unfinalized would stay open until the next one arrives.
             $exchange = null;
             // TODO: a full collection after every exchange can cost more than the exchange on a large
@@ -74,6 +94,23 @@ final readonly class DispatcherRunner implements RunnerInterface
         \Rapira\log($message, LogLevel::Error, ['exception' => $exception]);
     }
 
+    /**
+     * Sends the failure response, or a plain 500 if it cannot be built or sent.
+     */
+    private function answerFailure(ExchangeResponseEmitter $emitter, \Throwable $exception, Request $request): void
+    {
+        try {
+            $emitter->emit($request, ($this->failureResponse)($exception, $request));
+        } catch (ResponseDiscardedException) {
+        } catch (\Throwable) {
+            $emitter->emitError(500);
+        }
+    }
+
+    /**
+     * @throws \Throwable A failure of the kernel, once its exchange is answered, of terminate(), or of a
+     *         response whose head is out.
+     */
     private function serve(Exchange $exchange): void
     {
         // TODO: skip a cancelled exchange with isCancelled() again once https://github.com/rapira-rs/rapira/issues/201
@@ -93,10 +130,19 @@ final readonly class DispatcherRunner implements RunnerInterface
             $request = $converted->request;
             $level = \ob_get_level();
             \ob_start();
+            $response = $failure = null;
             try {
                 $response = $this->kernel->handle($request);
+            } catch (\Throwable $failure) {
             } finally {
                 $output = self::takeOutput($level);
+            }
+
+            if ($response === null) {
+                \assert($failure !== null);
+                $this->answerFailure($emitter, $failure, $request);
+
+                throw $failure;
             }
 
             try {

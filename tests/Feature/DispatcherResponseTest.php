@@ -20,7 +20,6 @@ use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use Testo\Assert;
-use Testo\Expect;
 use Testo\Lifecycle\AfterTest;
 use Testo\Test;
 
@@ -82,7 +81,7 @@ final class DispatcherResponseTest
         });
         $level = \ob_get_level();
 
-        $this->serveWith($kernel, $buffered, $streamed);
+        Assert::same($this->serveWith($kernel, $buffered, $streamed), 0);
 
         Assert::same(\ob_get_level(), $level);
         Assert::same($buffered->getBody(), 'pre-body');
@@ -102,7 +101,7 @@ final class DispatcherResponseTest
         });
 
         try {
-            $this->serveWith($kernel, $exchange);
+            Assert::same($this->serveWith($kernel, $exchange), 0);
         } finally {
             @\unlink($path);
         }
@@ -112,7 +111,7 @@ final class DispatcherResponseTest
         Assert::count($exchange->sentFiles, 1);
     }
 
-    public function outputOfAFailedHandleIsDroppedAndTheBufferRestored(): never
+    public function outputOfAFailedHandleIsDroppedAndTheBufferRestored(): void
     {
         $kernel = new TestKernel(static function (): never {
             echo 'partial';
@@ -123,15 +122,15 @@ final class DispatcherResponseTest
         });
         $level = \ob_get_level();
 
-        Expect::exception(\RuntimeException::class)->withMessage('kernel failed');
         \ob_start();
         try {
-            $this->serveWith($kernel, FakeExchange::for('/'));
+            $result = $this->serveWith($kernel, FakeExchange::for('/'));
         } finally {
             $leaked = \ob_get_clean();
             Assert::same(\ob_get_level(), $level);
             Assert::same($leaked, '');
         }
+        Assert::same($result, 1);
     }
 
     public function headRequestKeepsThePreparedContentLengthAndSendsNoBody(): void
@@ -205,7 +204,7 @@ final class DispatcherResponseTest
 
         \ob_start();
         try {
-            $this->serveWith($kernel, $gone, $next);
+            Assert::same($this->serveWith($kernel, $gone, $next), 0);
             Assert::same(\ob_get_contents(), '');
         } finally {
             \ob_end_clean();
@@ -230,16 +229,13 @@ final class DispatcherResponseTest
             use Rapira\Symfony\Tests\Support\TestKernel;
             use Symfony\Component\HttpFoundation\StreamedResponse;
 
-            (new FakeRuntime(Mode::Dispatcher, new FakeHttpDispatcher(FakeExchange::for('/'))))->install();
+            $host = (new FakeRuntime(Mode::Dispatcher, new FakeHttpDispatcher(FakeExchange::for('/'))))->install();
             $kernel = new TestKernel(static fn() => new StreamedResponse(static function (): void {
                 ob_start(null, 0, PHP_OUTPUT_HANDLER_CLEANABLE | PHP_OUTPUT_HANDLER_FLUSHABLE);
                 echo 'trapped';
             }));
-            try {
-                (new Runtime(['debug' => false, 'error_handler' => false, 'env' => 'test']))->getRunner($kernel)->run();
-            } catch (LogicException $exception) {
-                fwrite(STDERR, $exception->getMessage());
-            }
+            $result = (new Runtime(['debug' => false, 'error_handler' => false, 'env' => 'test']))->getRunner($kernel)->run();
+            fwrite(STDERR, $result . ': ' . $host->logs[0]['context']['exception']->getMessage());
             PHP);
 
         try {
@@ -249,7 +245,7 @@ final class DispatcherResponseTest
         }
 
         Assert::same($status, 0);
-        Assert::string($output)->contains('A nested output buffer cannot be removed safely.');
+        Assert::string($output)->contains('1: A nested output buffer cannot be removed safely.');
     }
 
     public function headRequestForAFileSendsItsLengthAndStillDeletesIt(): void
@@ -512,13 +508,13 @@ final class DispatcherResponseTest
      */
     private function serve(\Closure $respond, FakeExchange ...$exchanges): void
     {
-        $this->serveWith(new TestKernel($respond), ...$exchanges);
+        Assert::same($this->serveWith(new TestKernel($respond), ...$exchanges), 0);
     }
 
-    private function serveWith(TestKernel $kernel, Exchange ...$exchanges): void
+    private function serveWith(TestKernel $kernel, Exchange ...$exchanges): int
     {
         (new FakeRuntime(Mode::Dispatcher, new FakeHttpDispatcher(...$exchanges)))->install();
 
-        Assert::same(self::runtime()->getRunner($kernel)->run(), 0);
+        return self::runtime()->getRunner($kernel)->run();
     }
 }

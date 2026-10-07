@@ -13,6 +13,7 @@ use Rapira\Mode;
 use Rapira\Sdk\Testing\Double\FakeRuntime;
 use Rapira\Sdk\Testing\Double\Http\FakeExchange;
 use Rapira\Sdk\Testing\Double\Http\FakeHttpDispatcher;
+use Rapira\Symfony\Tests\Support\BootRecordingKernel;
 use Rapira\Symfony\Tests\Support\FakeRuntimeLifecycle;
 use Rapira\Symfony\Tests\Support\ForeignDispatcher;
 use Rapira\Symfony\Tests\Support\ScriptedExchange;
@@ -21,6 +22,7 @@ use Symfony\Component\HttpFoundation\EventStreamResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpFoundation\StreamedResponse;
+use Symfony\Component\HttpKernel\HttpKernelInterface;
 use Testo\Assert;
 use Testo\Expect;
 use Testo\Skip;
@@ -86,34 +88,108 @@ final class DispatcherModeTest
         Assert::true($healthy->isFinalized());
     }
 
-    public function discardRaisedByTheApplicationItselfPropagates(): never
+    public function discardRaisedByTheApplicationItselfEndsTheLoop(): void
     {
         $dispatcher = new FakeHttpDispatcher(FakeExchange::for('/terminate-fail'), FakeExchange::for('/must-not-run'));
         $kernel = new TestKernel(
             terminate: static fn() => throw new WorkDiscardedException('application terminate discard'),
         );
 
-        Expect::exception(WorkDiscardedException::class)->withMessage('application terminate discard');
+        $host = $this->serve($kernel, $dispatcher, result: 1);
+
+        Assert::same($dispatcher->receives, 1);
+        Assert::count($host->logs, 1);
+        Assert::instanceOf($host->logs[0]['context']['exception'], WorkDiscardedException::class);
+    }
+
+    public function kernelBootsBeforeTheFirstReceive(): void
+    {
+        $dispatcher = new FakeHttpDispatcher(FakeExchange::for('/one'));
+        $kernel = new BootRecordingKernel(new TestKernel());
+        $dispatcher->beforeReceive = static function () use ($dispatcher, $kernel): void {
+            $kernel->inner->events[] = 'receive:' . $dispatcher->receives;
+        };
+
+        $this->serve($kernel, $dispatcher);
+
+        Assert::same(\array_slice($kernel->inner->events, 0, 3), ['boot', 'receive:1', 'handle:/one']);
+    }
+
+    public function bootFailurePropagatesBeforeAnyExchangeIsTaken(): never
+    {
+        $dispatcher = new FakeHttpDispatcher(FakeExchange::for('/must-not-run'));
+        $kernel = new BootRecordingKernel(new TestKernel(), new \RuntimeException('container broken'));
+        (new FakeRuntime(Mode::Dispatcher, $dispatcher))->install();
+
+        Expect::exception(\RuntimeException::class)->withMessage('container broken');
         try {
-            $this->serve($kernel, $dispatcher);
+            self::runtime()->getRunner($kernel)->run();
         } finally {
-            Assert::same($dispatcher->receives, 1);
+            Assert::same($dispatcher->receives, 0);
         }
     }
 
-    public function kernelFailurePropagatesWithoutServingTheNextExchange(): never
+    public function kernelFailureIsAnsweredWithA500LoggedAndEndsTheLoop(): void
     {
+        $failing = FakeExchange::for('/fail');
         $next = FakeExchange::for('/must-not-run');
-        $dispatcher = new FakeHttpDispatcher(FakeExchange::for('/fail'), $next);
+        $dispatcher = new FakeHttpDispatcher($failing, $next);
+        $failure = new \RuntimeException('kernel failed');
+        $kernel = new TestKernel(static function () use ($failure): never {
+            echo 'printed before';
+
+            throw $failure;
+        });
+
+        $host = $this->serve($kernel, $dispatcher, result: 1);
+
+        Assert::same($failing->status, 500);
+        Assert::true($failing->isFinalized());
+        Assert::same($failing->getBody(), 'Internal Server Error');
+        Assert::same($kernel->events, ['handle:/fail']);
+        Assert::same($dispatcher->receives, 1);
+        Assert::null($next->status);
+        Assert::count($host->logs, 1);
+        Assert::same($host->logs[0]['level'], LogLevel::Error);
+        Assert::same($host->logs[0]['context']['exception'], $failure);
+    }
+
+    public function kernelFailureIsAnsweredByAnExtendingRuntime(): void
+    {
+        $failing = FakeExchange::for('/fail');
         $kernel = new TestKernel(static fn() => throw new \RuntimeException('kernel failed'));
 
-        Expect::exception(\RuntimeException::class)->withMessage('kernel failed');
-        try {
-            $this->serve($kernel, $dispatcher);
-        } finally {
-            Assert::same($dispatcher->receives, 1);
-            Assert::null($next->status);
-        }
+        $this->serve(
+            $kernel,
+            new FakeHttpDispatcher($failing),
+            result: 1,
+            failurePage: static fn(\Throwable $exception, Request $request): Response => new Response(
+                \sprintf('%s at %s', $exception->getMessage(), $request->getPathInfo()),
+                503,
+                ['Retry-After' => '30'],
+            ),
+        );
+
+        Assert::same($failing->status, 503);
+        Assert::same($failing->header('Retry-After'), '30');
+        Assert::same($failing->getBody(), 'kernel failed at /fail');
+    }
+
+    public function failureResponseThatFailsFallsBackToA500(): void
+    {
+        $failing = FakeExchange::for('/fail');
+        $kernel = new TestKernel(static fn() => throw new \RuntimeException('kernel failed'));
+
+        $host = $this->serve(
+            $kernel,
+            new FakeHttpDispatcher($failing),
+            result: 1,
+            failurePage: static fn(): never => throw new \LogicException('page failed'),
+        );
+
+        Assert::same($failing->status, 500);
+        Assert::true($failing->isFinalized());
+        Assert::count($host->logs, 1);
     }
 
     public function exchangeIsReleasedBeforeTheNextReceive(): void
@@ -229,23 +305,24 @@ final class DispatcherModeTest
         Assert::same($kernel->events, ['handle:/stream', 'terminate:/stream', 'handle:/next', 'terminate:/next']);
     }
 
-    public function streamFailingAfterItsHeadIsOutPropagates(): never
+    public function streamFailingAfterItsHeadIsOutIsLoggedAndEndsTheLoop(): void
     {
         $failing = FakeExchange::for('/stream');
-        $kernel = new TestKernel(static fn(): Response => new StreamedResponse(static function (): void {
+        $failure = new \RuntimeException('stream failed');
+        $kernel = new TestKernel(static fn(): Response => new StreamedResponse(static function () use ($failure): void {
             echo 'partial';
             \ob_flush();
 
-            throw new \RuntimeException('stream failed');
+            throw $failure;
         }));
 
-        Expect::exception(\RuntimeException::class)->withMessage('stream failed');
-        try {
-            $this->serve($kernel, new FakeHttpDispatcher($failing, FakeExchange::for('/must-not-run')));
-        } finally {
-            Assert::same($failing->getBody(), 'partial');
-            Assert::false($failing->isFinalized());
-        }
+        $host = $this->serve($kernel, new FakeHttpDispatcher($failing, FakeExchange::for('/must-not-run')), result: 1);
+
+        Assert::same($failing->getBody(), 'partial');
+        Assert::false($failing->isFinalized());
+        Assert::same($kernel->events, ['handle:/stream']);
+        Assert::count($host->logs, 1);
+        Assert::same($host->logs[0]['context']['exception'], $failure);
     }
 
     /**
@@ -265,11 +342,18 @@ final class DispatcherModeTest
         Assert::instanceOf($host->logs[0]['context']['exception'], \Throwable::class);
     }
 
-    private function serve(TestKernel $kernel, FakeHttpDispatcher $dispatcher): FakeRuntime
-    {
+    /**
+     * @param null|\Closure(\Throwable, Request): Response $failurePage
+     */
+    private function serve(
+        HttpKernelInterface $kernel,
+        FakeHttpDispatcher $dispatcher,
+        int $result = 0,
+        ?\Closure $failurePage = null,
+    ): FakeRuntime {
         $host = (new FakeRuntime(Mode::Dispatcher, $dispatcher))->install();
 
-        Assert::same(self::runtime()->getRunner($kernel)->run(), 0);
+        Assert::same(self::runtime($failurePage)->getRunner($kernel)->run(), $result);
 
         return $host;
     }
