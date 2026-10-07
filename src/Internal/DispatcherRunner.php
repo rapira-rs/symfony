@@ -113,8 +113,11 @@ final readonly class DispatcherRunner implements RunnerInterface
      */
     private function serve(Exchange $exchange): void
     {
-        // TODO: skip a cancelled exchange with isCancelled() again once https://github.com/rapira-rs/rapira/issues/201
-        //  stops it crashing Linux workers; tracked in https://github.com/rapira-rs/symfony/issues/2.
+        // The client left or the deadline passed while the exchange waited in the queue.
+        if ($exchange->isCancelled()) {
+            return;
+        }
+
         $emitter = new ExchangeResponseEmitter($exchange);
 
         try {
