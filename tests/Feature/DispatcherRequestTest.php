@@ -81,7 +81,7 @@ final class DispatcherRequestTest
         Assert::same($request->server->get('REQUEST_TIME_FLOAT'), 1_700_000_000.5);
         Assert::same($request->server->get('HTTPS'), 'on');
         Assert::same($request->server->get('REQUEST_SCHEME'), 'https');
-        Assert::same($request->server->get('SERVER_NAME'), 'example.test');
+        Assert::false($request->server->has('SERVER_NAME'));
         Assert::same($request->server->get('QUERY_STRING'), 'q=one&q=two&raw=%2F');
         Assert::same($request->query->all(), ['q' => 'two', 'raw' => '/']);
         Assert::same($request->server->get('REMOTE_ADDR'), '127.0.0.1');
@@ -167,12 +167,17 @@ final class DispatcherRequestTest
         Assert::same($internet->server->get('SERVER_PROTOCOL'), 'HTTP/1.1');
         Assert::same($internet->server->get('APP_ENV'), 'test');
         Assert::same($internet->server->get('REQUEST_SCHEME'), 'http');
-        Assert::same($internet->server->get('SERVER_NAME'), 'public.example');
-        foreach (['AUTH_TYPE', 'CONTENT_LENGTH', 'CONTENT_TYPE', 'HTTPS', 'REMOTE_ADDR', 'REMOTE_PORT'] as $key) {
+        foreach (['AUTH_TYPE', 'CONTENT_LENGTH', 'CONTENT_TYPE', 'HTTPS', 'SERVER_NAME'] as $key) {
             Assert::false($internet->server->has($key), $key);
         }
-        foreach (['SERVER_ADDR', 'SERVER_PORT', 'REMOTE_ADDR', 'REMOTE_PORT', 'HTTPS', 'CONTENT_TYPE', 'CONTENT_LENGTH'] as $key) {
+        foreach (['SERVER_ADDR', 'SERVER_PORT', 'HTTPS', 'CONTENT_TYPE', 'CONTENT_LENGTH'] as $key) {
             Assert::false($unix->server->has($key), $key);
+        }
+        // A unix peer is loopback, as the SAPI registers it, never the boot-time address.
+        foreach ([$internet, $unix] as $request) {
+            Assert::same($request->server->get('REMOTE_ADDR'), '127.0.0.1');
+            Assert::same($request->server->get('REMOTE_PORT'), 0);
+            Assert::same($request->getClientIp(), '127.0.0.1');
         }
     }
 
@@ -288,11 +293,11 @@ final class DispatcherRequestTest
         Assert::same($request->headers->get('x-real'), 'real');
     }
 
-    public function serverNameIsTheAuthorityHostWithoutPortOrBrackets(): void
+    public function authorityNeverBecomesTheServerName(): void
     {
         $request = $this->serveOne(new FakeExchange(self::request(uri: 'https://[::1]:8443/', target: '/')));
 
-        Assert::same($request->server->get('SERVER_NAME'), '::1');
+        Assert::false($request->server->has('SERVER_NAME'));
         Assert::same($request->server->get('HTTPS'), 'on');
         Assert::same($request->server->get('REQUEST_SCHEME'), 'https');
     }

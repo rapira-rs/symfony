@@ -294,8 +294,10 @@ final readonly class DispatcherRequestFactory
         if ($request->remote instanceof InetAddress) {
             $params['REMOTE_ADDR'] = $request->remote->ip;
             $params['REMOTE_PORT'] = $request->remote->port;
-        } elseif ($request->remote->path !== null) {
-            $params['REMOTE_ADDR'] = $request->remote->path;
+        } else {
+            // REMOTE_ADDR must hold a host number (RFC 3875 §4.1.8), so the SAPI puts loopback in for a unix peer.
+            $params['REMOTE_ADDR'] = '127.0.0.1';
+            $params['REMOTE_PORT'] = 0;
         }
 
         if ($request->server instanceof InetAddress) {
@@ -303,10 +305,8 @@ final readonly class DispatcherRequestFactory
             $params['SERVER_PORT'] = $request->server->port;
         }
 
-        $host = \parse_url($request->uri, \PHP_URL_HOST);
-        if (\is_string($host) && $host !== '') {
-            $params['SERVER_NAME'] = \trim($host, '[]');
-        }
+        // SERVER_NAME is left out: the SAPI sets the configured server name, which a dispatcher does not see, and
+        // the authority the client sent must not pass for a value the server controls.
 
         // Named as the Rapira SAPI names them in Worker mode, the content pair under both names.
         foreach ($headers as $lower => [, $values]) {
