@@ -1,0 +1,78 @@
+---
+
+name: 🧪 Testing
+
+on:  # yamllint disable-line rule:truthy
+  pull_request:
+    branches:
+      - 1.x
+  push:
+    branches:
+      - 1.x
+
+permissions:
+  contents: read
+
+env:
+  # The acceptance suite fetches the rapira binary through dload; the cached registry spares its API calls.
+  DLOAD_CACHE_DIR: ${{ github.workspace }}/runtime/dload-cache
+
+jobs:
+  testing:
+    name: PHP ${{ matrix.php-version }} on ${{ matrix.os }} (${{ matrix.dependencies }})
+    timeout-minutes: 10
+    runs-on: ${{ matrix.os }}
+    env:
+      COMPOSER_ROOT_VERSION: '0.1.x-dev'
+    concurrency:
+      cancel-in-progress: true
+      group: testing-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ matrix.os }}-${{ matrix.php-version }}-${{ matrix.dependencies }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+        php-version:
+          - '8.4'
+          - '8.5'
+        dependencies:
+          - highest
+        include:
+          - os: ubuntu-latest
+            php-version: '8.4'
+            dependencies: lowest
+    steps:
+      - name: 📦 Check out the codebase
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: 🛠️ Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php-version }}
+          extensions: curl, mbstring
+          ini-values: error_reporting=E_ALL
+          coverage: none
+
+      - name: 🤖 Validate composer.json
+        run: composer validate --ansi --strict
+
+      - name: 📥 Install dependencies with composer
+        uses: ramsey/composer-install@v3
+        with:
+          dependency-versions: ${{ matrix.dependencies }}
+
+      # A GitHub cache entry is immutable, so the run_id keeps the key missing and restore-keys reads the newest.
+      - name: 💾 Restore the dload version registry
+        uses: actions/cache@v4
+        with:
+          path: runtime/dload-cache
+          key: dload-registry-${{ github.run_id }}
+          restore-keys: dload-registry-
+
+      - name: 🧪 Run tests
+        run: composer test
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
