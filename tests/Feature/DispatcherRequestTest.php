@@ -181,6 +181,77 @@ final class DispatcherRequestTest
         }
     }
 
+    public function applicationEnvironmentVariablesSurviveRequestMetadataFiltering(): void
+    {
+        $settings = ['SERVER_ROLE' => 'api', 'REQUEST_TIMEOUT' => '30', 'AUTH_TOKEN' => 'token', 'CONTENT_DIR' => '/content', 'REMOTE_STORAGE' => 's3', 'PHP_AUTH_SETTING' => 'custom'];
+        $_SERVER = $settings + $_SERVER;
+
+        $request = $this->serveOne(FakeExchange::for('/env'));
+
+        foreach ($settings as $key => $value) {
+            Assert::same($request->server->get($key), $value, $key);
+        }
+    }
+
+    public function inputLimitsTruncateParametersWithoutInvokingTheDebugErrorHandler(): void
+    {
+        $limit = (int) \ini_get('max_input_vars');
+        Assert::true($limit > 0);
+        $pairs = $fields = [];
+        for ($i = 0; $i <= $limit; ++$i) {
+            $pairs[] = 'p' . $i . '=value';
+            $fields[] = new FormField('p' . $i, 'value', []);
+        }
+        $encoded = \implode('&', $pairs);
+        $exchanges = [
+            FakeExchange::for('/query?' . $encoded),
+            FakeExchange::for('/form', 'POST', ['content-type' => ['application/x-www-form-urlencoded']], $encoded),
+            FakeExchange::for('/multipart', 'POST', body: new Multipart($fields, [])),
+            FakeExchange::for('/cookies', headers: ['cookie' => [\implode('; ', $pairs)]]),
+        ];
+        $kernel = new TestKernel();
+        $debugHandler = static function (int $severity, string $message): never {
+            throw new \ErrorException($message, severity: $severity);
+        };
+        \set_error_handler($debugHandler);
+        try {
+            $this->serve($kernel, ...$exchanges);
+            // Read the current handler without emitting another warning.
+            $restored = \set_error_handler($debugHandler);
+            \restore_error_handler();
+        } finally {
+            \restore_error_handler();
+        }
+
+        Assert::same($restored, $debugHandler);
+        Assert::count($kernel->requests, 4);
+        foreach ($exchanges as $exchange) {
+            Assert::same($exchange->status, 200);
+            Assert::true($exchange->isFinalized());
+        }
+        $bags = [$kernel->requests[0]->query, $kernel->requests[1]->request, $kernel->requests[2]->request, $kernel->requests[3]->cookies];
+        foreach ($bags as $bag) {
+            Assert::count($bag->all(), $limit);
+            Assert::same($bag->get('p' . ($limit - 1)), 'value');
+            Assert::false($bag->has('p' . $limit));
+        }
+    }
+
+    public function overlyNestedCookieDoesNotTurnAParsingWarningIntoA500(): void
+    {
+        $name = 'nested' . \str_repeat('[child]', (int) \ini_get('max_input_nesting_level') + 1);
+        \set_error_handler(static function (int $severity, string $message): never {
+            throw new \ErrorException($message, severity: $severity);
+        });
+        try {
+            $request = $this->serveOne(FakeExchange::for('/', headers: ['cookie' => [$name . '=value; kept=yes']]));
+        } finally {
+            \restore_error_handler();
+        }
+
+        Assert::same($request->cookies->all(), ['kept' => 'yes']);
+    }
+
     public function urlEncodedFormIsParsedIntoNestedFields(): void
     {
         $request = $this->serveOne(FakeExchange::for(
@@ -328,7 +399,7 @@ final class DispatcherRequestTest
                 'name' => $file->getClientOriginalName(),
                 'content' => \file_get_contents($file->getPathname()),
                 'path' => $file->getPathname(),
-                'empty' => $request->files->all()['empty']->getError(),
+                'empty' => $request->files->all()['empty'],
             ];
 
             return new Response();
@@ -345,7 +416,7 @@ final class DispatcherRequestTest
         Assert::same($seen['fields'], ['meta' => ['name' => 'Ada']]);
         Assert::same($seen['name'], 'note.txt');
         Assert::same($seen['content'], 'upload-body');
-        Assert::same($seen['empty'], \UPLOAD_ERR_NO_FILE);
+        Assert::null($seen['empty']);
         Assert::false(\is_file($seen['path']));
         Assert::false(\is_file($source));
     }
@@ -432,7 +503,7 @@ final class DispatcherRequestTest
         $request = $kernel->requests[0];
         Assert::same($request->request->all(), ['field_name' => 'value', 'list_one' => ['item']]);
         Assert::same(\array_keys($request->files->all()), ['file_name', 'list_two']);
-        Assert::true($request->files->all()['list_two'][0] instanceof UploadedFile);
+        Assert::same($request->files->all()['list_two'], []);
     }
 
     public function urlEncodedBodyIsParsedWhateverTheMethod(): void

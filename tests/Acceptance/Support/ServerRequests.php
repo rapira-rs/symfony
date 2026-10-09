@@ -50,12 +50,13 @@ trait ServerRequests
     }
 
     /**
+     * @param array<int, mixed> $options Additional cURL options, for example a multipart upload.
      * @return array{0: int, 1: string} The response status code and body.
      */
-    private function request(string $path): array
+    private function request(string $path, array $options = []): array
     {
         $curl = \curl_init();
-        \curl_setopt_array($curl, [
+        \curl_setopt_array($curl, $options + [
             \CURLOPT_URL => 'http://' . self::ADDRESS . $path,
             \CURLOPT_RETURNTRANSFER => true,
             \CURLOPT_TIMEOUT => 10,

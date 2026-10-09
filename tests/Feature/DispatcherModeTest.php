@@ -303,22 +303,28 @@ final class DispatcherModeTest
         Assert::same($kernel->events, ['handle:/stream', 'terminate:/stream', 'handle:/next', 'terminate:/next']);
     }
 
-    public function streamFailingAfterItsHeadIsOutIsLoggedAndEndsTheLoop(): void
+    public function streamFailingAfterItsHeadIsOutIsLoggedTerminatesAndKeepsServing(): void
     {
         $failing = FakeExchange::for('/stream');
+        $next = FakeExchange::for('/next');
         $failure = new \RuntimeException('stream failed');
-        $kernel = new TestKernel(static fn(): Response => new StreamedResponse(static function () use ($failure): void {
-            echo 'partial';
-            \ob_flush();
+        $kernel = new TestKernel(static fn(Request $request): Response => $request->getPathInfo() === '/next'
+            ? new Response('healthy')
+            : new StreamedResponse(static function () use ($failure): void {
+                echo 'partial';
+                \ob_flush();
 
-            throw $failure;
-        }));
+                throw $failure;
+            }));
 
-        $host = $this->serve($kernel, new FakeHttpDispatcher($failing, FakeExchange::for('/must-not-run')), result: 1);
+        $host = $this->serve($kernel, new FakeHttpDispatcher($failing, $next));
 
+        Assert::same($failing->status, 200);
         Assert::same($failing->getBody(), 'partial');
         Assert::false($failing->isFinalized());
-        Assert::same($kernel->events, ['handle:/stream']);
+        Assert::same($kernel->events, ['handle:/stream', 'terminate:/stream', 'handle:/next', 'terminate:/next']);
+        Assert::same($next->getBody(), 'healthy');
+        Assert::true($next->isFinalized());
         Assert::count($host->logs, 1);
         Assert::same($host->logs[0]['context']['exception'], $failure);
     }

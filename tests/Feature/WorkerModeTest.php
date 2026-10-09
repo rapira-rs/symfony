@@ -99,6 +99,20 @@ final class WorkerModeTest
         Assert::same($request->server->get('SCRIPT_FILENAME'), '/app/public/index.php');
     }
 
+    public function applicationEnvironmentVariablesSurviveRequestMetadataFiltering(): void
+    {
+        $settings = ['SERVER_ROLE' => 'api', 'REQUEST_TIMEOUT' => '30', 'AUTH_TOKEN' => 'token', 'CONTENT_DIR' => '/content', 'REMOTE_STORAGE' => 's3', 'PHP_AUTH_SETTING' => 'custom'];
+        $_SERVER = $settings + $_SERVER;
+        $runtime = (new FakeRuntime(Mode::Worker, captureOutput: true))->queue('GET', '/env');
+        $kernel = new TestKernel();
+
+        Assert::same($this->run($runtime, $kernel), 0);
+
+        foreach ($settings as $key => $value) {
+            Assert::same($kernel->requests[0]->server->get($key), $value, $key);
+        }
+    }
+
     public function responseIsSentBeforeTheRequestTerminatesAndTheNextOneIsServed(): void
     {
         $runtime = (new FakeRuntime(Mode::Worker, captureOutput: true))
@@ -106,15 +120,15 @@ final class WorkerModeTest
             ->queue('GET', '/two')
             ->queue('GET', '/three');
         $kernel = new TestKernel(terminate: static function () use ($runtime, &$kernel): void {
-            $kernel->events[] = \sprintf('sent:%d served:%d', \count($runtime->outputs), $runtime->servedRequests);
+            $kernel->events[] = \sprintf('finished:%d current:%s body:%s', $runtime->finishedRequests, $_SERVER['REQUEST_URI'], \ob_get_contents());
         });
 
         $this->run($runtime, $kernel);
 
         Assert::same($kernel->events, [
-            'handle:/one', 'terminate:/one', 'sent:1 served:1',
-            'handle:/two', 'terminate:/two', 'sent:2 served:2',
-            'handle:/three', 'terminate:/three', 'sent:3 served:3',
+            'handle:/one', 'terminate:/one', 'finished:1 current:/one body:/one',
+            'handle:/two', 'terminate:/two', 'finished:2 current:/two body:/two',
+            'handle:/three', 'terminate:/three', 'finished:3 current:/three body:/three',
         ]);
         Assert::same($runtime->outputs, ['/one', '/two', '/three']);
     }

@@ -56,12 +56,12 @@ The same setup stays valid outside Rapira: under php-fpm or the CLI the Runtime 
 ## Execution modes
 
 - **Classic** sends the response, calls `rapira_finish_request()` so the client has its answer, then runs `kernel->terminate()`.
-- **Worker** loops over `Rapira\handle_request()`. Per request: the request is built from the superglobals, the response is sent and finished, then terminate runs and cyclic garbage is collected.
+- **Worker** loops over `Rapira\handle_request()`. Per request: the request is built from the superglobals, the response is sent and finished, then terminate runs inside the request handler while uploads and the execution timeout remain available. Cyclic garbage is collected after the handler returns.
 - **Dispatcher** takes each `Rapira\Http\Exchange` from the HTTP dispatcher, converts it to a Symfony `Request` and writes the response straight into the exchange. Exchanges are served one at a time; one cancelled while it was queued is skipped.
 
 Worker and Dispatcher serve only an `HttpKernelInterface` application and refuse anything else with a `LogicException`. Rapira owns recycling and `max_requests`; the Runtime adds no request limit of its own.
 
-In Classic and Worker modes the response is sent inside an output buffer of its own, flushed every 8 KiB and on every `ob_flush()`, as under php-fpm with `output_buffering`. The host builds a Worker request's `$_SERVER` from the request alone, so the Runtime adds the boot-time variables back, `APP_ENV`, `APP_SECRET` and the rest of the environment, but never boot-time request metadata such as `HTTP_*`, `REMOTE_*` or `HTTPS`.
+In Classic and Worker modes the response is sent inside an output buffer of its own, flushed every 8 KiB and on every `ob_flush()`, as under php-fpm with `output_buffering`. The host builds a Worker request's `$_SERVER` from the request alone, so the Runtime adds the boot-time variables back, `APP_ENV`, `APP_SECRET` and the rest of the environment, but never boot-time request metadata such as `HTTP_*`, `REMOTE_ADDR` or `HTTPS`. Application variables such as `SERVER_ROLE` and `REQUEST_TIMEOUT` are preserved.
 
 ## Failures
 
@@ -83,7 +83,9 @@ The superglobals are neither read nor filled. The Symfony `Request` holds what t
 
 Code that reads `$_GET`, `$_POST`, `$_COOKIE`, `$_FILES`, `$_SERVER` or `php://input`, or answers through `header()`, does not see the request. Symfony sessions work, `NativeSessionStorage` included: the session listener takes the session id from the request's cookies and sets the session cookie on the response. Calling `session_start()` directly does not, since PHP looks for the id in `$_COOKIE` and sends its cookie through `header()`.
 
-Uploaded files are renamed out of Rapira's spool, which the host empties once the response is sent, so they stay readable through `kernel->terminate()`; the Runtime removes them afterwards. A file the application moved stays where it was moved.
+Uploaded files are renamed out of Rapira's spool, which the host empties once the response is sent, so they stay readable through `kernel->terminate()`; the Runtime removes them afterwards. A file the application moved stays where it was moved. Empty upload inputs are normalized by Symfony's `FileBag`, just as in Classic and Worker modes.
+
+Input exceeding PHP's parsing limits (such as `max_input_vars`) is truncated as in PHP's startup parsing, including when Symfony's debug error handler is enabled.
 
 ## Dispatcher responses
 
@@ -91,16 +93,29 @@ Responses are prepared by HttpFoundation, with every repeated header and `Set-Co
 
 - Output the application prints while handling the request goes out ahead of the body, except ahead of a file.
 - A buffered body goes out with the head in one write, or in 8 MiB writes under its length when longer.
-- A `BinaryFileResponse` is handed to Rapira with `Exchange::sendFile()`, ranges included, so PHP never holds the bytes. A temporary file, a file deleted after sending and a file Rapira refuses are streamed by PHP instead.
+- A `BinaryFileResponse` is handed to Rapira with `Exchange::sendFile()`, ranges included, so PHP never holds the bytes. A temporary file, a file deleted after sending and a file Rapira refuses are streamed by PHP instead. The same fallback applies if a Symfony version changes the internal properties needed for the optimization.
 - A `StreamedResponse`, or anything else that prints its body, is captured and forwarded every 8 KiB and on every `ob_flush()`. A bare `flush()` reaches no output handler, so call `ob_flush()` before it where latency matters. The head goes out with the first chunk.
 - `HEAD`, `204` and `304` send no body. A `HEAD` request for a file does not read it, and `deleteFileAfterSend()` still applies.
 - If the client leaves mid-stream, the rest of the output is dropped and terminate still runs. The streaming code is not told: `connection_aborted()` does not reflect the exchange.
 - `EventStreamResponse` is answered with `500`: it closes every output buffer after each event, so nothing is left to capture the next one. Use a `StreamedResponse` that calls `ob_flush()` after each event.
 
-A request that cannot be converted, and a response that fails before its head is written, such as a terminal `1xx` status or a header value the wire cannot carry, are logged through `Rapira\log()` and answered with `400` or `500`, and the worker goes on: the kernel was not involved. A response that fails after its head is out cannot be answered any more; it is logged and ends the loop, as described under [Failures](#failures), and Rapira fails the exchange.
+A request that cannot be converted, and a response that fails before its head is written, such as a terminal `1xx` status or a header value the wire cannot carry, are logged through `Rapira\log()` and answered with `400` or `500`, and the worker goes on: the kernel was not involved. A response that fails after its head is out cannot be answered any more; it is logged, Rapira fails the unfinished exchange, and termination runs before the worker serves the next request. A damaged output buffer stack still ends the loop because it cannot be reused safely.
 
 ## Persistent state
 
 In Worker and Dispatcher modes the process, kernel, container and services outlive each request. Keep request state out of static properties and long-lived services; Symfony resets services tagged `kernel.reset` between requests, anything else is the application's to reset.
 
 The kernel boots once, before the first request, and `Kernel::boot()` resolves the `REMOTE_ADDR` placeholder of `trusted_proxies` from `$_SERVER` at that moment. The boot-time `$_SERVER` holds no client address, so the placeholder is dropped and trusts no proxy for the life of the worker. List the proxy addresses or subnets explicitly, or use `PRIVATE_SUBNETS`, instead of `REMOTE_ADDR`.
+
+## Development
+
+The feature and live-server acceptance suites use Testo:
+
+```sh
+composer install
+composer test
+composer test:feature
+composer test:acceptance
+```
+
+The acceptance suite downloads Rapira and its bundled PHP into `runtime/bin` when missing. The `rapira/testing` Testo integration starts a fixture app in Classic, Worker and Dispatcher modes and stops each server after its test case. The first run needs network access to download the binary; acceptance tests need permission to bind local ports.

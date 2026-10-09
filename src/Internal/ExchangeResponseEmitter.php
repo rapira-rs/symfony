@@ -225,6 +225,14 @@ final class ExchangeResponseEmitter
      */
     private function sendFile(BinaryFileResponse $response, int $status, array $headers): bool
     {
+        // These properties are Symfony internals, not a compatibility promise. Its public
+        // sendContent() remains usable if a future version changes the optimized file state.
+        foreach (['offset', 'maxlen', 'deleteFileAfterSend', 'tempFileObject'] as $property) {
+            if (!\property_exists(BinaryFileResponse::class, $property)) {
+                return false;
+            }
+        }
+
         /** @var int $offset */
         $offset = self::fileState($response, 'offset');
         /** @var int $maxlen */
