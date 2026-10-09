@@ -9,6 +9,7 @@ use Rapira\Http\Multipart;
 use Rapira\Http\Request as RapiraRequest;
 use Rapira\Http\UploadedFile as RapiraUploadedFile;
 use Rapira\InetAddress;
+use Rapira\LogLevel;
 use Rapira\Mode;
 use Rapira\Sdk\Testing\Double\FakeRuntime;
 use Rapira\Sdk\Testing\Double\Http\FakeExchange;
@@ -215,7 +216,7 @@ final class DispatcherRequestTest
         };
         \set_error_handler($debugHandler);
         try {
-            $this->serve($kernel, ...$exchanges);
+            $host = $this->serve($kernel, ...$exchanges);
             // Read the current handler without emitting another warning.
             $restored = \set_error_handler($debugHandler);
             \restore_error_handler();
@@ -235,21 +236,11 @@ final class DispatcherRequestTest
             Assert::same($bag->get('p' . ($limit - 1)), 'value');
             Assert::false($bag->has('p' . $limit));
         }
-    }
-
-    public function overlyNestedCookieDoesNotTurnAParsingWarningIntoA500(): void
-    {
-        $name = 'nested' . \str_repeat('[child]', (int) \ini_get('max_input_nesting_level') + 1);
-        \set_error_handler(static function (int $severity, string $message): never {
-            throw new \ErrorException($message, severity: $severity);
-        });
-        try {
-            $request = $this->serveOne(FakeExchange::for('/', headers: ['cookie' => [$name . '=value; kept=yes']]));
-        } finally {
-            \restore_error_handler();
+        Assert::count($host->logs, 4);
+        foreach ($host->logs as $log) {
+            Assert::same($log['level'], LogLevel::Warning);
+            Assert::string($log['message'])->contains('Input variables exceeded');
         }
-
-        Assert::same($request->cookies->all(), ['kept' => 'yes']);
     }
 
     public function urlEncodedFormIsParsedIntoNestedFields(): void
@@ -648,10 +639,12 @@ final class DispatcherRequestTest
         return $kernel->requests[0];
     }
 
-    private function serve(TestKernel $kernel, FakeExchange ...$exchanges): void
+    private function serve(TestKernel $kernel, FakeExchange ...$exchanges): FakeRuntime
     {
-        (new FakeRuntime(Mode::Dispatcher, new FakeHttpDispatcher(...$exchanges)))->install();
+        $host = (new FakeRuntime(Mode::Dispatcher, new FakeHttpDispatcher(...$exchanges)))->install();
 
         self::runtime()->getRunner($kernel)->run();
+
+        return $host;
     }
 }

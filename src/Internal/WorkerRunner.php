@@ -60,7 +60,7 @@ final readonly class WorkerRunner implements RunnerInterface
 
     /**
      * Serves one request, if the host has one, and terminates it. The request and the response die with
-     * this frame, so the cycle collection that follows can free them.
+     * the handler, so the cycle collection that follows can free them.
      *
      * @param array<string, mixed> $boot
      *
