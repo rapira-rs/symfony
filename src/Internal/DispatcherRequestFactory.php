@@ -8,6 +8,7 @@ use Rapira\Http\Multipart;
 use Rapira\Http\Request as RapiraRequest;
 use Rapira\Http\UploadedFile as RapiraUploadedFile;
 use Rapira\InetAddress;
+use Rapira\LogLevel;
 use Symfony\Component\HttpFoundation\File\UploadedFile;
 use Symfony\Component\HttpFoundation\Request;
 
@@ -261,9 +262,13 @@ final readonly class DispatcherRequestFactory
             return [];
         }
 
-        // Match PHP's startup parsing: input beyond its limits is truncated, not turned into a
-        // server error by Symfony's debug error handler. Restore that handler even if parsing fails.
-        \set_error_handler(static fn(): bool => true, \E_WARNING);
+        // As PHP's startup parsing does, input past max_input_vars is truncated with a logged warning; Symfony's
+        // debug error handler would turn the warning into a 500.
+        \set_error_handler(static function (int $severity, string $message): bool {
+            \Rapira\log($message, LogLevel::Warning);
+
+            return true;
+        }, \E_WARNING);
         try {
             \parse_str($query, $result);
         } finally {

@@ -85,7 +85,7 @@ Code that reads `$_GET`, `$_POST`, `$_COOKIE`, `$_FILES`, `$_SERVER` or `php://i
 
 Uploaded files are renamed out of Rapira's spool, which the host empties once the response is sent, so they stay readable through `kernel->terminate()`; the Runtime removes them afterwards. A file the application moved stays where it was moved. Empty upload inputs are normalized by Symfony's `FileBag`, just as in Classic and Worker modes.
 
-Input exceeding PHP's parsing limits (such as `max_input_vars`) is truncated as in PHP's startup parsing, including when Symfony's debug error handler is enabled.
+Input past `max_input_vars` is truncated and PHP's warning is logged through `Rapira\log()`, as in PHP's startup parsing, also when Symfony's debug error handler is enabled.
 
 ## Dispatcher responses
 
@@ -99,7 +99,7 @@ Responses are prepared by HttpFoundation, with every repeated header and `Set-Co
 - If the client leaves mid-stream, the rest of the output is dropped and terminate still runs. The streaming code is not told: `connection_aborted()` does not reflect the exchange.
 - `EventStreamResponse` is answered with `500`: it closes every output buffer after each event, so nothing is left to capture the next one. Use a `StreamedResponse` that calls `ob_flush()` after each event.
 
-A request that cannot be converted, and a response that fails before its head is written, such as a terminal `1xx` status or a header value the wire cannot carry, are logged through `Rapira\log()` and answered with `400` or `500`, and the worker goes on: the kernel was not involved. A response that fails after its head is out cannot be answered any more; it is logged, Rapira fails the unfinished exchange, and termination runs before the worker serves the next request. A damaged output buffer stack still ends the loop because it cannot be reused safely.
+A request that cannot be converted, and a response that fails before its head is written, such as a terminal `1xx` status or a header value the wire cannot carry, are logged through `Rapira\log()` and answered with `400` or `500`, and the worker goes on: the kernel was not involved. A response that fails after its head is out cannot be answered any more; it is logged, `kernel->terminate()` runs, and only then does Rapira fail the unfinished exchange, so the client waits on the cut-off body until terminate returns. The worker then serves the next request. A damaged output buffer stack still ends the loop because it cannot be reused safely.
 
 ## Persistent state
 
