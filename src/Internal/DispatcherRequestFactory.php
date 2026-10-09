@@ -190,11 +190,14 @@ final readonly class DispatcherRequestFactory
 
     /**
      * @param list<string> $uploads
+     * @return UploadedFile|array{name: string, type: string, tmp_name: string, error: int, size: int}
      */
-    private static function createFile(RapiraUploadedFile $file, array &$uploads): UploadedFile
+    private static function createFile(RapiraUploadedFile $file, array &$uploads): UploadedFile|array
     {
         if ($file->clientFilename === '') {
-            return new UploadedFile('', '', null, \UPLOAD_ERR_NO_FILE, true);
+            // FileBag normalizes this to null and removes empty entries from upload lists.
+            // Passing null directly is not allowed by FileBag::set().
+            return ['name' => '', 'type' => '', 'tmp_name' => '', 'error' => \UPLOAD_ERR_NO_FILE, 'size' => 0];
         }
 
         // The host deletes its spool file once the exchange finalizes, which is before terminate(); a file
@@ -230,7 +233,7 @@ final readonly class DispatcherRequestFactory
             }
 
             // The name alone through `parse_str()` gives the key PHP registers it under.
-            \parse_str(\rawurlencode($name), $probe);
+            $probe = self::parseQuery(\rawurlencode($name));
             $key = \array_key_first($probe);
             if ($key === null) {
                 continue;
@@ -258,7 +261,14 @@ final readonly class DispatcherRequestFactory
             return [];
         }
 
-        \parse_str($query, $result);
+        // Match PHP's startup parsing: input beyond its limits is truncated, not turned into a
+        // server error by Symfony's debug error handler. Restore that handler even if parsing fails.
+        \set_error_handler(static fn(): bool => true, \E_WARNING);
+        try {
+            \parse_str($query, $result);
+        } finally {
+            \restore_error_handler();
+        }
 
         return $result;
     }

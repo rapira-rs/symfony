@@ -27,7 +27,8 @@ use Symfony\Component\Runtime\RunnerInterface;
  * with an error and logged, and the loop goes on. A failure that escapes the kernel, which answers its
  * own errors, leaves the kernel in an unknown state: the exchange is answered with the failure response,
  * the failure is logged, and the loop ends for Rapira to run the script afresh. So does a failure of
- * terminate() or of a response whose head is out, unanswered.
+ * terminate() or a damaged output buffer stack. Other response failures still terminate the request
+ * and leave the worker available for the next exchange.
  *
  * @internal
  */
@@ -108,8 +109,8 @@ final readonly class DispatcherRunner implements RunnerInterface
     }
 
     /**
-     * @throws \Throwable A failure of the kernel, once its exchange is answered, of terminate(), or of a
-     *         response whose head is out.
+     * @throws \Throwable A failure of the kernel, once its exchange is answered, of terminate(), or of
+     *         the output buffer stack.
      */
     private function serve(Exchange $exchange): void
     {
@@ -154,6 +155,12 @@ final readonly class DispatcherRunner implements RunnerInterface
             } catch (UnsentResponseException $exception) {
                 self::report('The Symfony response could not be sent.', $exception->getPrevious() ?? $exception);
                 $emitter->emitError(500);
+            } catch (OutputBufferException $exception) {
+                throw $exception;
+            } catch (\Throwable $exception) {
+                // The head is already out. Leave the exchange unfinalized for the host to fail,
+                // but a failed body does not invalidate the kernel or skip its termination.
+                self::report('The Symfony response could not be sent.', $exception);
             }
 
             if ($this->kernel instanceof TerminableInterface) {

@@ -70,14 +70,10 @@ final readonly class WorkerRunner implements RunnerInterface
      */
     private function serveNext(array $boot): bool
     {
-        /** @var Request|null $request */
-        $request = null;
-        /** @var Response|null $response */
-        $response = null;
         /** @var \Throwable|null $failure */
         $failure = null;
 
-        $served = \Rapira\handle_request(function () use ($boot, &$request, &$response, &$failure): bool {
+        $served = \Rapira\handle_request(function () use ($boot, &$failure): bool {
             $_SERVER += $boot;
 
             $request = Request::createFromGlobals();
@@ -95,16 +91,20 @@ final readonly class WorkerRunner implements RunnerInterface
             SapiResponse::send($response);
             rapira_finish_request();
 
+            // Keep the host's timeout and uploaded files alive until termination is complete.
+            // Rethrow only after handle_request() returns: the client already has its response.
+            if ($this->kernel instanceof TerminableInterface) {
+                try {
+                    $this->kernel->terminate($request, $response);
+                } catch (\Throwable $exception) {
+                    $failure = $exception;
+                }
+            }
+
             return true;
         });
 
         $failure === null or throw $failure;
-
-        // Outside the handler: the host would answer a failure thrown in it with a 500 for a request it has
-        // already sent, and keep serving with a kernel that failed to terminate.
-        if ($request !== null && $response !== null && $this->kernel instanceof TerminableInterface) {
-            $this->kernel->terminate($request, $response);
-        }
 
         return $served;
     }

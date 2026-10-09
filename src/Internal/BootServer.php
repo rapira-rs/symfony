@@ -26,23 +26,37 @@ final class BootServer
         'SCRIPT_NAME',
     ];
 
-    private const REQUEST_PREFIXES = [
-        'AUTH_',
-        'CONTENT_',
-        'HTTP_',
-        'PHP_AUTH_',
-        'REMOTE_',
-        'REQUEST_',
-        'SERVER_',
-    ];
+    // Exact CGI names registered by Rapira's SAPI and PHP itself. Prefixes such as SERVER_ or
+    // CONTENT_ also belong to legitimate application settings and must not be discarded.
     private const REQUEST_KEYS = [
+        'AUTH_TYPE',
+        'CONTENT_LENGTH',
+        'CONTENT_TYPE',
         'DOCUMENT_URI',
         'GATEWAY_INTERFACE',
         'HTTPS',
         'ORIG_PATH_INFO',
         'PATH_INFO',
+        'PHP_AUTH_DIGEST',
+        'PHP_AUTH_PW',
+        'PHP_AUTH_USER',
         'QUERY_STRING',
         'REDIRECT_STATUS',
+        'REMOTE_ADDR',
+        'REMOTE_HOST',
+        'REMOTE_IDENT',
+        'REMOTE_PORT',
+        'REMOTE_USER',
+        'REQUEST_METHOD',
+        'REQUEST_SCHEME',
+        'REQUEST_TIME',
+        'REQUEST_TIME_FLOAT',
+        'REQUEST_URI',
+        'SERVER_ADDR',
+        'SERVER_NAME',
+        'SERVER_PORT',
+        'SERVER_PROTOCOL',
+        'SERVER_SOFTWARE',
     ];
 
     /**
@@ -80,12 +94,6 @@ final class BootServer
             return false;
         }
 
-        foreach (self::REQUEST_PREFIXES as $prefix) {
-            if (\str_starts_with($key, $prefix)) {
-                return false;
-            }
-        }
-
-        return true;
+        return !\str_starts_with($key, 'HTTP_');
     }
 }
