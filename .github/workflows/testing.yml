@@ -44,7 +44,7 @@ jobs:
             dependencies: lowest
     steps:
       - name: 📦 Check out the codebase
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -60,13 +60,13 @@ jobs:
         run: composer validate --ansi --strict
 
       - name: 📥 Install dependencies with composer
-        uses: ramsey/composer-install@v3
+        uses: ramsey/composer-install@v4
         with:
           dependency-versions: ${{ matrix.dependencies }}
 
       # A GitHub cache entry is immutable, so the run_id keeps the key missing and restore-keys reads the newest.
       - name: 💾 Restore the dload version registry
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: runtime/dload-cache
           key: dload-registry-${{ github.run_id }}

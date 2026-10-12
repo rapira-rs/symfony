@@ -26,7 +26,7 @@ jobs:
       COMPOSER_ROOT_VERSION: '0.1.x-dev'
     steps:
       - name: 📦 Check out the codebase
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -41,7 +41,7 @@ jobs:
         run: composer validate --ansi --strict
 
       - name: 📥 Install dependencies with composer
-        uses: ramsey/composer-install@v3
+        uses: ramsey/composer-install@v4
 
       - name: 🎨 Check code style
         run: composer cs:diff
@@ -63,7 +63,7 @@ jobs:
           - '8.5'
     steps:
       - name: 📦 Check out the codebase
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -74,7 +74,7 @@ jobs:
           coverage: none
 
       - name: 📥 Install dependencies with composer
-        uses: ramsey/composer-install@v3
+        uses: ramsey/composer-install@v4
 
       - name: 🧩 Check dependencies
         run: composer dependency-analyser
