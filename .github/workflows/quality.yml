@@ -1,0 +1,80 @@
+---
+
+name: 🧹 Quality
+
+on:  # yamllint disable-line rule:truthy
+  pull_request:
+    branches:
+      - 1.x
+  push:
+    branches:
+      - 1.x
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Code style and static analysis
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    env:
+      COMPOSER_ROOT_VERSION: '0.1.x-dev'
+    steps:
+      - name: 📦 Check out the codebase
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: 🛠️ Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          ini-values: error_reporting=E_ALL
+          coverage: none
+
+      - name: 🤖 Validate composer.json
+        run: composer validate --ansi --strict
+
+      - name: 📥 Install dependencies with composer
+        uses: ramsey/composer-install@v3
+
+      - name: 🎨 Check code style
+        run: composer cs:diff
+
+      - name: 🔍 Run static analysis
+        run: composer psalm:ci
+
+  dependency-analysis:
+    name: Dependency analysis on PHP ${{ matrix.php-version }}
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    env:
+      COMPOSER_ROOT_VERSION: '0.1.x-dev'
+    strategy:
+      fail-fast: false
+      matrix:
+        php-version:
+          - '8.4'
+          - '8.5'
+    steps:
+      - name: 📦 Check out the codebase
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: 🛠️ Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php-version }}
+          coverage: none
+
+      - name: 📥 Install dependencies with composer
+        uses: ramsey/composer-install@v3
+
+      - name: 🧩 Check dependencies
+        run: composer dependency-analyser

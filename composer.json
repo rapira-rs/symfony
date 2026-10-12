@@ -1,0 +1,88 @@
+{
+    "name": "rapira/symfony",
+    "description": "Symfony Runtime for Rapira Worker and Dispatcher modes",
+    "license": "BSD-3-Clause",
+    "type": "library",
+    "keywords": [
+        "dispatcher",
+        "rapira",
+        "runtime",
+        "symfony",
+        "worker"
+    ],
+    "homepage": "https://github.com/rapira-rs/symfony",
+    "support": {
+        "issues": "https://github.com/rapira-rs/symfony/issues",
+        "source": "https://github.com/rapira-rs/symfony"
+    },
+    "authors": [
+        {
+            "name": "Aleksei Gagarin",
+            "homepage": "https://github.com/roxblnfk"
+        }
+    ],
+    "funding": [
+        {
+            "type": "boosty",
+            "url": "https://boosty.to/roxblnfk"
+        }
+    ],
+    "require": {
+        "php": ">=8.4",
+        "rapira/contract": "^0.9",
+        "symfony/http-foundation": "^7.4 || ^8.0",
+        "symfony/http-kernel": "^7.4 || ^8.0",
+        "symfony/runtime": "^7.4 || ^8.0"
+    },
+    "require-dev": {
+        "ext-curl": "*",
+        "fidry/cpu-core-counter": "^1.2",
+        "llm/skills": "^1.14",
+        "rapira/testing": "^0.1.7",
+        "roxblnfk/unpoly": "^1.8",
+        "shipmonk/composer-dependency-analyser": "^1.8.4",
+        "spiral/code-style": "^2.3.1",
+        "symfony/config": "^7.4 || ^8.0",
+        "symfony/dependency-injection": "^7.4 || ^8.0",
+        "testo/assert": "^0.1.17",
+        "testo/lifecycle": "^0.1.9",
+        "testo/skip": "^0.1.1",
+        "testo/test": "^0.1.8",
+        "testo/testo": "^0.10.55",
+        "vimeo/psalm": "^7"
+    },
+    "autoload": {
+        "psr-4": {
+            "Rapira\\Symfony\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Rapira\\Symfony\\Tests\\": "tests/"
+        }
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true,
+    "extra": {
+        "branch-alias": {
+            "dev-1.x": "0.1.x-dev"
+        }
+    },
+    "config": {
+        "allow-plugins": {
+            "llm/skills": true,
+            "symfony/runtime": true
+        },
+        "sort-packages": true
+    },
+    "scripts": {
+        "cs:diff": "php-cs-fixer fix --dry-run -v --diff",
+        "cs:fix": "php-cs-fixer fix -v",
+        "dependency-analyser": "composer-dependency-analyser",
+        "psalm": "psalm",
+        "psalm:ci": "psalm --output-format=github --show-info=false --stats --threads=4",
+        "test": "testo",
+        "test:feature": "testo --suite=Feature",
+        "test:acceptance": "testo --suite=Acceptance"
+    }
+}
