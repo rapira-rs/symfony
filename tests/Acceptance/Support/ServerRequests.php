@@ -9,7 +9,7 @@ use Testo\Assert;
 
 /**
  * The requests every mode must answer identically. A test case picks the mode with `RunRapira` and
- * names it in {@see mode()}. Each case listens on its own `ADDRESS`, so a server that outlived the
+ * names it in {@see self::mode()}. Each case listens on its own `ADDRESS`, so a server that outlived the
  * previous case can never answer for the current one.
  */
 trait ServerRequests
