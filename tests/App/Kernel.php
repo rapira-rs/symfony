@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Rapira\Symfony\Tests\App;
 
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -38,6 +39,7 @@ final class Kernel implements HttpKernelInterface, TerminableInterface
             '/' => new Response('OK'),
             '/mode' => new Response(\strtolower(\Rapira\get_mode()->name)),
             '/boot' => new Response($this->bootId),
+            '/file' => $this->fileResponse($request),
             '/upload' => new Response('uploaded'),
             '/termination' => new JsonResponse($this->lastTermination),
             '/terminate-timeout' => $this->timedResponse(),
@@ -80,6 +82,15 @@ final class Kernel implements HttpKernelInterface, TerminableInterface
             }
             \set_time_limit(0);
         }
+    }
+
+    private function fileResponse(Request $request): Response
+    {
+        BinaryFileResponse::trustXSendfileTypeHeader();
+
+        // HttpKernel's response listener prepares the response before the Runtime sees it.
+        return (new BinaryFileResponse(__DIR__ . '/download.txt', headers: ['Content-Type' => 'text/plain']))
+            ->prepare($request);
     }
 
     private function timedResponse(): Response

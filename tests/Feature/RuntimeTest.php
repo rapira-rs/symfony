@@ -11,6 +11,8 @@ use Rapira\Sdk\Testing\Double\Http\FakeHttpDispatcher;
 use Rapira\Symfony\Tests\Support\FakeRuntimeLifecycle;
 use Rapira\Symfony\Runtime;
 use Rapira\Symfony\Tests\Support\TestKernel;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
+use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use Symfony\Component\HttpKernel\HttpKernelInterface;
@@ -92,6 +94,27 @@ final class RuntimeTest
         Assert::same($result, 0);
         Assert::same($output, '/classic');
         Assert::same($kernel->events, ['handle:/classic', 'terminate:/classic']);
+    }
+
+    public function classicModeOutsideRapiraPreservesTrustedSendfileResponses(): void
+    {
+        FakeRuntime::reset();
+        $_SERVER['HTTP_X_SENDFILE_TYPE'] = 'X-Sendfile';
+        $trust = new \ReflectionProperty(BinaryFileResponse::class, 'trustXSendfileTypeHeader');
+        $previous = $trust->getValue();
+        BinaryFileResponse::trustXSendfileTypeHeader();
+        $response = new BinaryFileResponse(__FILE__, headers: ['Content-Type' => 'text/plain']);
+        $kernel = new TestKernel(static fn(Request $request): Response => $response->prepare($request));
+
+        try {
+            [$result, $output] = self::serveClassic(self::runtime(), $kernel);
+
+            Assert::same($result, 0);
+            Assert::same($output, '');
+            Assert::same($response->headers->get('X-Sendfile'), __FILE__);
+        } finally {
+            $trust->setValue(null, $previous);
+        }
     }
 
     public function nonHttpApplicationIsRefusedInWorkerMode(): never

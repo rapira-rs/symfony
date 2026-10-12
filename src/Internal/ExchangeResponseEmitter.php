@@ -153,7 +153,11 @@ final class ExchangeResponseEmitter
             $request->setMethod('GET');
         }
 
-        $response->prepare($request);
+        if ($response instanceof BinaryFileResponse) {
+            FileResponse::prepare($response, $request);
+        } else {
+            $response->prepare($request);
+        }
         // prepare() sets the length of the file before it knows the status that sends none of it.
         if ($response instanceof BinaryFileResponse && !$response->isSuccessful()) {
             $response->headers->remove('Content-Length');

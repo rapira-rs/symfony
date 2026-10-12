@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Rapira\Symfony\Internal;
 
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
+use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
@@ -22,9 +24,15 @@ final class SapiResponse
      * A streamed callback commonly calls `ob_flush()`, which needs an open buffer: php-fpm has one from
      * `output_buffering`, the Rapira SAPI starts without. Without it `ob_flush()` raises a notice that
      * Symfony's error handler turns into an exception halfway through the body.
+     *
+     * A request enables Rapira's file preparation; null keeps a different SAPI's sendfile support.
      */
-    public static function send(Response $response): void
+    public static function send(Response $response, ?Request $request): void
     {
+        if ($request !== null && $response instanceof BinaryFileResponse) {
+            FileResponse::prepare($response, $request);
+        }
+
         $level = \ob_get_level();
         \ob_start(null, self::CHUNK_SIZE);
 

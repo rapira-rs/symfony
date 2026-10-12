@@ -61,6 +61,8 @@ The same setup stays valid outside Rapira: under php-fpm or the CLI the Runtime 
 
 Worker and Dispatcher serve only an `HttpKernelInterface` application and refuse anything else with a `LogicException`. Rapira owns recycling and `max_requests`; the Runtime adds no request limit of its own.
 
+Rapira does not interpret reverse-proxy file headers such as `X-Sendfile` or `X-Accel-Redirect`. In all three modes, the Runtime removes those headers from `BinaryFileResponse` and prepares it without `X-Sendfile-Type`, even if the kernel already prepared it with that header trusted. Files are sent through PHP or Dispatcher's `Exchange::sendFile()`, with ranges and `HEAD` preserved. The application's request is unchanged, and Classic mode outside Rapira keeps the SAPI's usual sendfile behavior.
+
 In Classic and Worker modes the response is sent inside an output buffer of its own, flushed every 8 KiB and on every `ob_flush()`, as under php-fpm with `output_buffering`. The host builds a Worker request's `$_SERVER` from the request alone, so the Runtime adds the boot-time variables back, `APP_ENV`, `APP_SECRET` and the rest of the environment, but never boot-time request metadata such as `HTTP_*`, `REMOTE_ADDR` or `HTTPS`. Application variables such as `SERVER_ROLE` and `REQUEST_TIMEOUT` are preserved.
 
 ## Failures

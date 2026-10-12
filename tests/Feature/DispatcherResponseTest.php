@@ -375,6 +375,41 @@ final class DispatcherResponseTest
         Assert::true($exchange->isFinalized());
     }
 
+    public function preparedSendfileResponsesUseRapiraOrPhpWithoutChangingTheRequest(): void
+    {
+        $path = self::file('0123456789');
+        $trust = new \ReflectionProperty(BinaryFileResponse::class, 'trustXSendfileTypeHeader');
+        $previous = $trust->getValue();
+        BinaryFileResponse::trustXSendfileTypeHeader();
+
+        try {
+            foreach ([false, true] as $refuseFiles) {
+                $exchange = FakeExchange::for('/file', headers: [
+                    'x-sendfile-type' => ['X-Sendfile'],
+                    'range' => ['bytes=2-5'],
+                ]);
+                $exchange->refuseFiles = $refuseFiles;
+                $kernel = new TestKernel(static fn(Request $request): Response => (new BinaryFileResponse(
+                    $path,
+                    headers: ['Content-Type' => 'text/plain', 'X-Application' => 'kept'],
+                ))->prepare($request));
+
+                Assert::same($this->serveWith($kernel, $exchange), 0);
+
+                Assert::same($exchange->status, 206);
+                Assert::same(self::deliveredBody($exchange), '2345');
+                Assert::null($exchange->header('x-sendfile'));
+                Assert::same($exchange->header('x-application'), 'kept');
+                Assert::count($exchange->sentFiles, $refuseFiles ? 0 : 1);
+                Assert::true($exchange->isFinalized());
+                Assert::same($kernel->requests[0]->headers->get('X-Sendfile-Type'), 'X-Sendfile');
+            }
+        } finally {
+            $trust->setValue(null, $previous);
+            @\unlink($path);
+        }
+    }
+
     public function fileDeletedAfterSendIsStreamedAndThenDeleted(): void
     {
         $path = self::file('0123456789');

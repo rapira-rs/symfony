@@ -30,7 +30,9 @@ final readonly class ClassicRunner implements RunnerInterface
         $request = Request::createFromGlobals();
         $response = $this->kernel->handle($request);
 
-        SapiResponse::send($response);
+        // Outside Rapira this is a userland contract stub; preserve the actual SAPI's file offload.
+        $native = (new \ReflectionFunction('Rapira\get_mode'))->isInternal();
+        SapiResponse::send($response, $native ? $request : null);
         // The client has its answer while terminate runs. Outside Rapira the stub answers false, and the
         // request is finished the way Symfony's own runner does it, which keeps it open in debug.
         if (!rapira_finish_request() && !$this->debug) {

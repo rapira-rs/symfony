@@ -29,6 +29,49 @@ trait ServerRequests
         Assert::same($body, $this->mode()->value);
     }
 
+    public function trustedSendfileHeadersDoNotSuppressDownloadsOrLeakPaths(): void
+    {
+        $directory = \dirname(__DIR__, 2) . \DIRECTORY_SEPARATOR . 'App' . \DIRECTORY_SEPARATOR;
+        foreach (['X-Sendfile', 'X-Accel-Redirect', 'X-LIGHTTPD-send-file', 'X-Custom-Sendfile'] as $type) {
+            foreach (['GET', 'range', 'HEAD'] as $method) {
+                $headers = [];
+                [$status, $body] = $this->request('/file', [
+                    \CURLOPT_HTTPHEADER => [
+                        'X-Sendfile-Type: ' . $type,
+                        'X-Accel-Mapping: ' . $directory . '=/protected/',
+                        ...($method === 'range' ? ['Range: bytes=2-5'] : []),
+                    ],
+                    \CURLOPT_NOBODY => $method === 'HEAD',
+                    \CURLOPT_HEADERFUNCTION => static function (\CurlHandle $curl, string $line) use (&$headers): int {
+                        if (\str_contains($line, ':')) {
+                            [$name, $value] = \explode(':', $line, 2);
+                            $headers[\strtolower($name)] = \trim($value);
+                        }
+
+                        return \strlen($line);
+                    },
+                ]);
+
+                Assert::same($status, $method === 'range' ? 206 : 200);
+                Assert::same($body, match ($method) {
+                    'HEAD' => '',
+                    'range' => '2345',
+                    default => "0123456789\n",
+                });
+                // The host omits Content-Length from HEAD responses on the wire.
+                if ($method !== 'HEAD') {
+                    Assert::same($headers['content-length'], $method === 'range' ? '4' : '11');
+                }
+                foreach (['x-sendfile', 'x-accel-redirect', 'x-lighttpd-send-file', 'x-custom-sendfile'] as $header) {
+                    Assert::false(isset($headers[$header]));
+                }
+                if ($method === 'range') {
+                    Assert::same($headers['content-range'], 'bytes 2-5/11');
+                }
+            }
+        }
+    }
+
     abstract protected function mode(): Mode;
 
     /**

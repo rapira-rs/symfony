@@ -88,7 +88,7 @@ final readonly class WorkerRunner implements RunnerInterface
                 return true;
             }
 
-            SapiResponse::send($response);
+            SapiResponse::send($response, $request);
             rapira_finish_request();
 
             // Keep the host's timeout and uploaded files alive until termination is complete.
@@ -117,10 +117,10 @@ final readonly class WorkerRunner implements RunnerInterface
     {
         try {
             if (!\headers_sent()) {
-                SapiResponse::send(($this->failureResponse)($exception, $request));
+                SapiResponse::send(($this->failureResponse)($exception, $request), $request);
             }
         } catch (\Throwable) {
-            \headers_sent() or SapiResponse::send(new Response('Internal Server Error', 500, ['Content-Type' => 'text/plain; charset=UTF-8']));
+            \headers_sent() or SapiResponse::send(new Response('Internal Server Error', 500, ['Content-Type' => 'text/plain; charset=UTF-8']), $request);
         }
     }
 }
