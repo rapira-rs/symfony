@@ -12,14 +12,11 @@ use Rapira\Symfony\Tests\Support\TestKernel;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use Symfony\Component\HttpFoundation\Response;
 
-// Minimum dependencies can emit PHP deprecations from eagerly loaded vendor files. They must not
-// corrupt this subprocess's JSON protocol; other diagnostics and all tested code remain visible.
-\set_error_handler(static fn(int $severity): bool => $severity === E_DEPRECATED);
-try {
-    require \dirname(__DIR__, 2) . '/vendor/autoload.php';
-} finally {
-    \restore_error_handler();
-}
+// Minimum dependencies emit PHP deprecations when vendor classes are loaded, including lazily.
+// Keep them out of this subprocess's JSON protocol while preserving application diagnostics.
+\set_error_handler(static fn(int $severity, string $message, string $file): bool =>
+    $severity === E_DEPRECATED && \str_contains($file, \DIRECTORY_SEPARATOR . 'vendor' . \DIRECTORY_SEPARATOR));
+require \dirname(__DIR__, 2) . '/vendor/autoload.php';
 
 \class_alias(FileResponseWithoutInternalState::class, BinaryFileResponse::class);
 $response = new FileResponseWithoutInternalState('file-body', headers: ['Content-Type' => 'text/plain']);

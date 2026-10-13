@@ -8,7 +8,7 @@ Symfony Runtime for [Rapira](https://rapira.rs/). The same `public/index.php` se
 composer require rapira/symfony
 ```
 
-Requires PHP 8.4 or newer, the Symfony components `http-foundation`, `http-kernel` and `runtime` in versions `^7.4 || ^8.0`, and Rapira 0.9.1 or newer: the x86_64 Linux builds of 0.9.0 crash a Dispatcher worker that checks whether its exchange is cancelled. Composer installs the PHP contract but cannot check the version of the Rapira binary.
+Requires PHP 8.4 or newer, the Symfony components `http-foundation`, `http-kernel` and `runtime` in versions `^6.4 || ^7.4 || ^8.0`, and Rapira 0.9.1 or newer: the x86_64 Linux builds of 0.9.0 crash a Dispatcher worker that checks whether its exchange is cancelled. Composer installs the PHP contract but cannot check the version of the Rapira binary.
 
 ## Application setup
 

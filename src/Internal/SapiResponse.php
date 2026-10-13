@@ -37,8 +37,9 @@ final class SapiResponse
         \ob_start(null, self::CHUNK_SIZE);
 
         try {
-            // Not send(true): under a server SAPI it closes every buffer, those it does not own included.
-            $response->send(false);
+            // Symfony 6.4 has no send(false): send() closes even buffers owned by the host.
+            $response->sendHeaders();
+            $response->sendContent();
         } finally {
             // Buffers the body opened and left behind are flushed as the SAPI would at the end of a request;
             // one that cannot be removed stays until the request ends.
