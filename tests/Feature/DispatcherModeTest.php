@@ -24,6 +24,7 @@ use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use Symfony\Component\HttpKernel\HttpKernelInterface;
 use Testo\Assert;
+use Testo\Core\Exception\SkipTest;
 use Testo\Expect;
 use Testo\Test;
 
@@ -237,6 +238,10 @@ final class DispatcherModeTest
      */
     public function eventStreamResponseIsNeverStreamed(): void
     {
+        if (!\class_exists(EventStreamResponse::class)) {
+            throw new SkipTest('EventStreamResponse requires Symfony 7.3 or newer.');
+        }
+
         $exchange = new ScriptedExchange(FakeExchange::for('/'));
         $kernel = new TestKernel(
             static fn(): Response => new EventStreamResponse(static fn(): iterable => yield 'event'),
@@ -263,6 +268,10 @@ final class DispatcherModeTest
 
     public function eventStreamResponseIsAnsweredWithAnErrorAndTheLoopGoesOn(): void
     {
+        if (!\class_exists(EventStreamResponse::class)) {
+            throw new SkipTest('EventStreamResponse requires Symfony 7.3 or newer.');
+        }
+
         $failing = FakeExchange::for('/events');
         $kernel = new TestKernel(static fn(Request $request): Response => $request->getPathInfo() === '/events'
             ? new EventStreamResponse(static fn(): iterable => yield 'event')
