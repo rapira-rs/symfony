@@ -42,10 +42,11 @@ jobs:
           - '8.0'
         dependencies:
           - highest
-        include:
-          - os: ubuntu-latest
-            php-version: '8.4'
-            symfony-version: '6.4'
+          - lowest
+        exclude:
+          - os: windows-latest
+            dependencies: lowest
+          - php-version: '8.5'
             dependencies: lowest
     steps:
       - name: 📦 Check out the codebase
