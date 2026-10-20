@@ -21,6 +21,7 @@ use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use Testo\Assert;
+use Testo\Core\Exception\SkipTest;
 use Testo\Lifecycle\AfterTest;
 use Testo\Test;
 
@@ -52,6 +53,24 @@ final class DispatcherResponseTest
         Assert::same($exchange->headers['X-Repeat'], ['one', 'two']);
         Assert::count($exchange->headers['Set-Cookie'], 2);
         Assert::same($exchange->chunks, ['body']);
+        Assert::true($exchange->isFinalized());
+    }
+
+    public function temporaryFileResponseIsStreamedInsteadOfHandedToTheHost(): void
+    {
+        if (!\property_exists(BinaryFileResponse::class, 'tempFileObject')) {
+            throw new SkipTest('SplTempFileObject responses require Symfony 7.1 or newer.');
+        }
+
+        $file = new \SplTempFileObject();
+        $file->fwrite('temporary body');
+        $exchange = FakeExchange::for('/temporary-file');
+
+        $this->serve(static fn(): Response => new BinaryFileResponse($file), $exchange);
+
+        Assert::same($exchange->status, 200);
+        Assert::same($exchange->getBody(), 'temporary body');
+        Assert::same($exchange->sentFiles, []);
         Assert::true($exchange->isFinalized());
     }
 

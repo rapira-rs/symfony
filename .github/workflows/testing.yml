@@ -19,14 +19,14 @@ env:
 
 jobs:
   testing:
-    name: PHP ${{ matrix.php-version }} on ${{ matrix.os }} (${{ matrix.dependencies }})
+    name: PHP ${{ matrix.php-version }} on ${{ matrix.os }} (Symfony ${{ matrix.symfony-version }}, ${{ matrix.dependencies }})
     timeout-minutes: 10
     runs-on: ${{ matrix.os }}
     env:
       COMPOSER_ROOT_VERSION: '0.1.x-dev'
     concurrency:
       cancel-in-progress: true
-      group: testing-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ matrix.os }}-${{ matrix.php-version }}-${{ matrix.dependencies }}
+      group: testing-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ matrix.os }}-${{ matrix.php-version }}-${{ matrix.symfony-version }}-${{ matrix.dependencies }}
     strategy:
       fail-fast: false
       matrix:
@@ -36,11 +36,17 @@ jobs:
         php-version:
           - '8.4'
           - '8.5'
+        symfony-version:
+          - '6.4'
+          - '7.4'
+          - '8.0'
         dependencies:
           - highest
-        include:
-          - os: ubuntu-latest
-            php-version: '8.4'
+          - lowest
+        exclude:
+          - os: windows-latest
+            dependencies: lowest
+          - php-version: '8.5'
             dependencies: lowest
     steps:
       - name: 📦 Check out the codebase
@@ -58,6 +64,11 @@ jobs:
 
       - name: 🤖 Validate composer.json
         run: composer validate --ansi --strict
+
+      - name: 🔧 Select Symfony version
+        run: |
+          composer require --no-update --no-interaction "symfony/http-foundation:${{ matrix.symfony-version }}.*" "symfony/http-kernel:${{ matrix.symfony-version }}.*" "symfony/runtime:${{ matrix.symfony-version }}.*"
+          composer require --dev --no-update --no-interaction "symfony/config:${{ matrix.symfony-version }}.*" "symfony/dependency-injection:${{ matrix.symfony-version }}.*"
 
       - name: 📥 Install dependencies with composer
         uses: ramsey/composer-install@v4

@@ -231,7 +231,7 @@ final class ExchangeResponseEmitter
     {
         // These properties are Symfony internals, not a compatibility promise. Its public
         // sendContent() remains usable if a future version changes the optimized file state.
-        foreach (['offset', 'maxlen', 'deleteFileAfterSend', 'tempFileObject'] as $property) {
+        foreach (['offset', 'maxlen', 'deleteFileAfterSend'] as $property) {
             if (!\property_exists(BinaryFileResponse::class, $property)) {
                 return false;
             }
@@ -243,14 +243,13 @@ final class ExchangeResponseEmitter
         $maxlen = self::fileState($response, 'maxlen');
         /** @var bool $deleteAfterSend */
         $deleteAfterSend = self::fileState($response, 'deleteFileAfterSend');
-        /** @var \SplTempFileObject|null $tempFile */
-        $tempFile = self::fileState($response, 'tempFileObject');
 
         // The host reads the file after this worker has moved on, so one deleted after sending has to be
         // sent by PHP. So does a temporary file or a stream, which have no path the host can open, and a
         // status that sends no file.
+        // Temporary files have no real path, including Symfony 7.1+ SplTempFileObject responses.
         $path = $response->getFile()->getRealPath();
-        if (!$response->isSuccessful() || $deleteAfterSend || $tempFile !== null || $path === false || $maxlen === 0) {
+        if (!$response->isSuccessful() || $deleteAfterSend || $path === false || $maxlen === 0) {
             return false;
         }
 
