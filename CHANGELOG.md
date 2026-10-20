@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/rapira-rs/symfony/compare/0.1.0...0.1.1) (2026-10-20)
+
+
+### Bug Fixes
+
+* support Symfony 6.4 ([#5](https://github.com/rapira-rs/symfony/issues/5)) ([630e453](https://github.com/rapira-rs/symfony/commit/630e4536e4fb44d392225acdb339f4cb4904e703))
+
 ## 0.1.0 (2026-10-12)
 
 
