@@ -1,0 +1,16 @@
+[grpc]
+listen = "127.0.0.1:8085"
+descriptor_set = "echo.binpb"
+services = ["rapira.test.Echo"]
+reflection = false
+
+[grpc.pool]
+entrypoint = "grpc.php"
+mode = "dispatcher"
+processes = 1
+max_requests = 0
+
+# The existing Rapira test harness probes this HTTP pool for server readiness.
+[http.pool]
+processes = 1
+max_requests = 0

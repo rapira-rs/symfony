@@ -1,6 +1,6 @@
 # rapira/symfony
 
-Symfony Runtime for [Rapira](https://rapira.rs/). The same `public/index.php` serves a Symfony HTTP kernel in every Rapira mode: Classic boots it per request, Worker and Dispatcher keep one kernel alive and serve requests one after another.
+Symfony Runtime for [Rapira](https://rapira.rs/), with HTTP and unary gRPC support. The same `public/index.php` serves a Symfony HTTP kernel in every Rapira mode: Classic boots it per request, Worker and Dispatcher keep one kernel alive and serve requests one after another.
 
 ## Installation
 
@@ -59,7 +59,7 @@ The same setup stays valid outside Rapira: under php-fpm or the CLI the Runtime 
 - **Worker** loops over `Rapira\handle_request()`. Per request: the request is built from the superglobals, the response is sent and finished, then terminate runs inside the request handler while uploads and the execution timeout remain available. Cyclic garbage is collected after the handler returns.
 - **Dispatcher** takes each `Rapira\Http\Exchange` from the HTTP dispatcher, converts it to a Symfony `Request` and writes the response straight into the exchange. Exchanges are served one at a time; one cancelled while it was queued is skipped.
 
-Worker and Dispatcher serve only an `HttpKernelInterface` application and refuse anything else with a `LogicException`. Rapira owns recycling and `max_requests`; the Runtime adds no request limit of its own.
+HTTP Worker and Dispatcher serve only an `HttpKernelInterface` application and refuse anything else with a `LogicException`. Rapira owns recycling and `max_requests`; the Runtime adds no request limit of its own.
 
 Rapira does not interpret reverse-proxy file headers such as `X-Sendfile` or `X-Accel-Redirect`. In all three modes, the Runtime removes those headers from `BinaryFileResponse` and prepares it without `X-Sendfile-Type`, even if the kernel already prepared it with that header trusted. Files are sent through PHP or Dispatcher's `Exchange::sendFile()`, with ranges and `HEAD` preserved. The application's request is unchanged, and Classic mode outside Rapira keeps the SAPI's usual sendfile behavior.
 
@@ -121,3 +121,82 @@ composer test:acceptance
 ```
 
 The acceptance suite downloads Rapira and its bundled PHP into `runtime/bin` when missing. The `rapira/testing` Testo integration starts a fixture app in Classic, Worker and Dispatcher modes and stops each server after its test case. The first run needs network access to download the binary; acceptance tests need permission to bind local ports.
+
+
+## Unary gRPC
+
+In a `[grpc.pool]`, the Runtime detects Rapira's `GrpcDispatcher` and serves calls through a public
+`Rapira\Symfony\Grpc\UnaryCallHandlerInterface` service in the Symfony kernel's container.
+Use the same `public/index.php` and `APP_RUNTIME='Rapira\Symfony\Runtime'` as for HTTP. A full
+`Symfony\Component\HttpKernel\KernelInterface` application is required to boot and access the container.
+
+The handler receives the native `Rapira\Grpc\UnaryCall`. It owns method routing, protobuf decoding,
+response metadata and application middleware. The runtime does not depend on a protobuf library,
+generated service interface or another application server's bundle.
+
+For an echo method whose input and output have the same protobuf type:
+
+```php
+namespace App\Grpc;
+
+use Rapira\Grpc\Status;
+use Rapira\Grpc\StatusCode;
+use Rapira\Grpc\UnaryCall;
+use Rapira\Symfony\Grpc\UnaryCallHandlerInterface;
+
+final class EchoHandler implements UnaryCallHandlerInterface
+{
+    public function handle(UnaryCall $call): void
+    {
+        if ($call->getContext()->method !== 'example.Echo/Ping') {
+            $call->fail(new Status(StatusCode::Unimplemented, 'Unknown method.'));
+            return;
+        }
+
+        $call->respond($call->getMessage());
+    }
+}
+```
+
+Expose the handler under the interface's service ID:
+
+```yaml
+# config/services.yaml
+services:
+    App\Grpc\EchoHandler: ~
+    Rapira\Symfony\Grpc\UnaryCallHandlerInterface:
+        alias: App\Grpc\EchoHandler
+        public: true
+```
+
+Compile the service's protobuf descriptors, including imports, with
+`buf build proto --as-file-descriptor-set -o var/echo.binpb`, then configure the pool:
+
+```toml
+[grpc]
+listen = "127.0.0.1:50051"
+descriptor_set = "var/echo.binpb"
+services = ["example.Echo"]
+
+[grpc.pool]
+entrypoint = "public/index.php"
+mode = "dispatcher"
+processes = 4
+max_requests = 1000
+```
+
+The handler must call `respond()` or `fail()` before returning, unless the call is cancelled.
+Expected application rejections should use `fail()` with the appropriate Rapira status; they do not
+restart the worker. Finish application-specific termination inside the handler, including cleanup
+on exceptions and disconnections. The runtime then invokes Symfony's `services_resetter`, when
+present, before receiving another call. Stateful application services should use Symfony's normal
+`ResetInterface`/`kernel.reset` mechanism.
+
+An exception escaping the handler is logged, answered with a sanitized `INTERNAL` status when
+possible, and stops the worker after service reset. A handler returning without finalizing a live
+call, or a failed service reset, also stops it. Cancelled calls are skipped, and a client disconnect
+during a response still allows cleanup and subsequent calls. The kernel shuts down when the
+dispatcher drains or the runner stops after a failure. Rapira owns worker replacement and request limits.
+
+Only unary methods are supported. HTTP middleware, `kernel.request`, `kernel.response` and
+`kernel.terminate` events do not run for gRPC calls.

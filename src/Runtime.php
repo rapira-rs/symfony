@@ -4,19 +4,22 @@ declare(strict_types=1);
 
 namespace Rapira\Symfony;
 
+use Rapira\Grpc\GrpcDispatcher;
 use Rapira\Http\HttpDispatcher;
 use Rapira\Mode;
 use Rapira\Symfony\Internal\ClassicRunner;
 use Rapira\Symfony\Internal\DispatcherRunner;
+use Rapira\Symfony\Internal\GrpcRunner;
 use Rapira\Symfony\Internal\WorkerRunner;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\HttpKernelInterface;
+use Symfony\Component\HttpKernel\KernelInterface;
 use Symfony\Component\Runtime\RunnerInterface;
 use Symfony\Component\Runtime\SymfonyRuntime;
 
 /**
- * Symfony Runtime that serves an HTTP kernel in the mode the Rapira host launched the process in.
+ * Symfony Runtime that serves HTTP and unary gRPC applications in the mode the Rapira host launched the process in.
  *
  * @api
  * @psalm-consistent-constructor
@@ -58,6 +61,17 @@ class Runtime extends SymfonyRuntime
     #[\Override]
     public function getRunner(?object $application): RunnerInterface
     {
+        if ($this->mode === Mode::Dispatcher) {
+            $dispatcher = \Rapira\get_dispatcher();
+            if ($dispatcher instanceof GrpcDispatcher) {
+                $application instanceof KernelInterface or throw new \LogicException(
+                    'Rapira gRPC requires a ' . KernelInterface::class . ' application.',
+                );
+
+                return new GrpcRunner($application, $dispatcher);
+            }
+        }
+
         if (!$application instanceof HttpKernelInterface) {
             // A resident process keeps serving only through a kernel; anything else would run once and exit.
             $this->mode === Mode::Classic or throw new \LogicException(\sprintf(

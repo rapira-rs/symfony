@@ -25,5 +25,16 @@ return new ApplicationConfig(
                 ),
             ),
         ),
+        new SuiteConfig(
+            name: 'GrpcAcceptance',
+            location: ['tests/GrpcAcceptance'],
+            plugins: SuitePlugins::with(
+                new RunRapiraPlugin(
+                    binary: $rapiraBinary,
+                    workingDirectory: $projectRoot . '/tests/App',
+                    config: $projectRoot . '/tests/App/grpc.toml',
+                ),
+            ),
+        ),
     ],
 );
