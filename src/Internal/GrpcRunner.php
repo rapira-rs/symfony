@@ -11,9 +11,11 @@ use Rapira\Grpc\Status;
 use Rapira\Grpc\StatusCode;
 use Rapira\Grpc\UnaryCall;
 use Rapira\LogLevel;
+use Rapira\Symfony\Grpc\CallDiscardedEvent;
 use Rapira\Symfony\Grpc\UnaryCallHandlerInterface;
 use Symfony\Component\HttpKernel\KernelInterface;
 use Symfony\Component\Runtime\RunnerInterface;
+use Symfony\Contracts\EventDispatcher\EventDispatcherInterface;
 use Symfony\Contracts\Service\ResetInterface;
 
 /**
@@ -50,6 +52,10 @@ final readonly class GrpcRunner implements RunnerInterface
             $resetter === null || $resetter instanceof ResetInterface or throw new \LogicException(
                 'The services_resetter service must implement ' . ResetInterface::class . '.',
             );
+            $events = $container->has('event_dispatcher') ? $container->get('event_dispatcher') : null;
+            $events === null || $events instanceof EventDispatcherInterface or throw new \LogicException(
+                'The event_dispatcher service must implement ' . EventDispatcherInterface::class . '.',
+            );
 
             while (true) {
                 try {
@@ -59,19 +65,23 @@ final readonly class GrpcRunner implements RunnerInterface
                 }
 
                 try {
+                    if ($call->isCancelled()) {
+                        continue;
+                    }
                     if ($call instanceof UnaryCall) {
                         self::serve($handler, $call);
-                    } elseif (!$call->isCancelled()) {
+                    } else {
                         $call->fail(new Status(StatusCode::Unimplemented, 'Only unary gRPC calls are supported.'));
                     }
-                } catch (WorkDiscardedException) {
+                } catch (WorkDiscardedException $exception) {
                     // The host can close a call between a cancellation check and a write.
+                    $events?->dispatch(new CallDiscardedEvent($call, $exception));
+                    unset($exception);
                 } finally {
                     $resetter?->reset();
                     // Do not retain call-scoped objects across the blocking receive().
                     unset($call);
                 }
-                \gc_collect_cycles();
             }
         } catch (\Throwable $exception) {
             \Rapira\log('The gRPC worker stops serving after a failure.', LogLevel::Error, ['exception' => $exception]);
@@ -84,10 +94,6 @@ final readonly class GrpcRunner implements RunnerInterface
 
     private static function serve(UnaryCallHandlerInterface $handler, UnaryCall $call): void
     {
-        if ($call->isCancelled()) {
-            return;
-        }
-
         try {
             $handler->handle($call);
             if (!$call->isFinalized() && !$call->isCancelled()) {

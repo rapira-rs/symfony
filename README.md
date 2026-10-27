@@ -198,5 +198,11 @@ call, or a failed service reset, also stops it. Cancelled calls are skipped, and
 during a response still allows cleanup and subsequent calls. The kernel shuts down when the
 dispatcher drains or the runner stops after a failure. Rapira owns worker replacement and request limits.
 
+When an `event_dispatcher` service is available, a `Rapira\Symfony\Grpc\CallDiscardedEvent` is
+dispatched if serving a call throws `WorkDiscardedException`. It exposes the call and exception for
+logging or application cleanup, before service reset. The call is no longer writable. Calls already
+cancelled when received are skipped without an event. A listener failure still runs service reset
+and stops the worker. Both `event_dispatcher` and `services_resetter` are optional.
+
 Only unary methods are supported. HTTP middleware, `kernel.request`, `kernel.response` and
 `kernel.terminate` events do not run for gRPC calls.
