@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/rapira-rs/symfony/compare/0.1.1...0.1.2) (2026-10-28)
+
+
+### Features
+
+* support unary gRPC in Symfony Runtime ([#7](https://github.com/rapira-rs/symfony/issues/7)) ([c2c0ba9](https://github.com/rapira-rs/symfony/commit/c2c0ba9f8e2de36af9010d6653415f82cb04ca00))
+
 ## [0.1.1](https://github.com/rapira-rs/symfony/compare/0.1.0...0.1.1) (2026-10-20)
 
 
