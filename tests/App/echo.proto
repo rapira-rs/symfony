@@ -1,0 +1,5 @@
+// Regenerate: buf build tests/App/echo.proto --as-file-descriptor-set -o tests/App/echo.binpb
+syntax = "proto3";
+package rapira.test;
+message EchoMessage { string value = 1; }
+service Echo { rpc Ping(EchoMessage) returns (EchoMessage); }
